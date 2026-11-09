@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m pip install "pip==25.2"
           python -m pip install "pip-tools==7.5.2"
-          python -m piptools compile --generate-hashes --resolver=backtracking --output-file=requirements-lock.txt requirements.txt
+          python -m piptools compile --generate-hashes --allow-unsafe --resolver=backtracking --output-file=requirements-lock.txt requirements.txt
           python -m pip install --dry-run --require-hashes -r requirements-lock.txt
       - name: Upload lockfile
         uses: actions/upload-artifact@v4
