@@ -10,6 +10,8 @@ $python = Join-Path $PSScriptRoot '.buildvenv\Scripts\python.exe'
 if ($LASTEXITCODE -ne 0) { throw 'pip upgrade failed.' }
 & $python -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+& $python -m pip check
+if ($LASTEXITCODE -ne 0) { throw 'Dependency conflict detected.' }
 & $python -m py_compile src\assistant.py
 if ($LASTEXITCODE -ne 0) { throw 'Python syntax check failed.' }
 & $python -m PyInstaller --noconfirm --clean --windowed --onedir --name AIJatekasszisztens --icon src\app.ico --add-data 'src\app.ico;.' --collect-submodules keyring.backends src\assistant.py
