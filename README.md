@@ -152,4 +152,5 @@ A projekt az [MIT-licenc](LICENSE) feltételei szerint használható, módosíth
 
 *Kevesebb nyelvi akadály. Több játékélmény.*
 
-Fejlesztő: [Ódor Dániel](https://github.com/odordaniel)
+ Fejlesztő: ChatGPT
+Ötletgazda: [Ódor Dániel](https://github.com/odordaniel)
