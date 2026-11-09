@@ -66,8 +66,8 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --require-hashes -r requirements-lock.txt
-          python -m pip install "pyinstaller==6.16.0"
           python -m pip check
+          python -m PyInstaller --version
 
       - name: Check Python syntax
         shell: pwsh
