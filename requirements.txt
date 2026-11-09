@@ -1,0 +1,7 @@
+PySide6-Essentials>=6.7,<7
+mss>=9,<11
+Pillow>=10,<13
+requests>=2.31,<3
+pyinstaller>=6.11,<7
+keyring>=25,<26
+certifi>=2025.1
