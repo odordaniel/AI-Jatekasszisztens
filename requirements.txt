@@ -6,3 +6,4 @@ pyinstaller>=6.11,<7
 keyring>=25,<26
 certifi>=2025.1
 pyinstaller==6.16.0
+setuptools==84.2.1
