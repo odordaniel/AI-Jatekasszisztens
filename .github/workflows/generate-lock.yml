@@ -18,9 +18,9 @@ jobs:
         with:
           python-version: '3.13'
       - name: Generate hash-locked dependencies
-        shell: pwsh
+        shell: pwsh        
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install "pip==25.2"
           python -m pip install "pip-tools==7.5.2"
           python -m piptools compile --generate-hashes --resolver=backtracking --output-file=requirements-lock.txt requirements.txt
           python -m pip install --dry-run --require-hashes -r requirements-lock.txt
