@@ -1,4 +1,6 @@
 import base64
+import html
+import textwrap
 import ctypes
 import ctypes.wintypes
 import re
@@ -27,6 +29,7 @@ APP_DIR = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Loc
 APP_DIR.mkdir(parents=True, exist_ok=True)
 ROOT = APP_DIR
 CONFIG_PATH = ROOT / 'config.json'
+APP_VERSION = '1.9.3'  # Update when publishing the next release
 
 # Első indításkor áthozzuk a meglévő parancssoros kiadás beállításait és előzményeit.
 def migrate_previous_install():
@@ -356,6 +359,7 @@ class ShortcutRecorder(QLineEdit):
 
 class Translator(QThread):
     finished_text = Signal(str)
+    model_started = Signal(str, bool)
 
     def __init__(self, image_bytes, cfg):
         super().__init__()
@@ -392,6 +396,7 @@ class Translator(QThread):
                 # Prevent system proxy and CA environment variables from silently rerouting private screenshots.
                 session.trust_env = False
                 for index, model in enumerate(models):
+                    self.model_started.emit(model, index > 0)
                     try:
                         # Stream and cap the response before parsing to avoid unbounded allocations.
                         with session.post(
@@ -788,7 +793,14 @@ class Overlay(QWidget):
         settings_layout.setSpacing(10)
         settings_heading = QLabel('Kapcsolat és modellek')
         settings_heading.setObjectName('brand')
-        settings_layout.addWidget(settings_heading)
+        settings_header = QHBoxLayout()
+        settings_header.addWidget(settings_heading)
+        settings_header.addStretch()
+        self.version_label = QLabel(f'v{APP_VERSION}')
+        self.version_label.setObjectName('small')
+        self.version_label.setToolTip('Alkalmazásverzió')
+        settings_header.addWidget(self.version_label)
+        settings_layout.addLayout(settings_header)
         settings_description = QLabel('OpenAI-kompatibilis API, például Open WebUI. A módosítások mentés után az új fordításoknál lépnek életbe.')
         settings_description.setObjectName('small')
         settings_description.setWordWrap(True)
@@ -840,6 +852,12 @@ class Overlay(QWidget):
         api_buttons.addWidget(self.test_api_button)
         api_buttons.addWidget(self.load_models_button)
         settings_layout.addLayout(api_buttons)
+        self.api_test_status = QLabel('')
+        self.api_test_status.setWordWrap(True)
+        self.api_test_status.setTextFormat(Qt.TextFormat.PlainText)
+        self.api_test_status.setContentsMargins(12, 9, 12, 9)
+        self.api_test_status.hide()
+        settings_layout.addWidget(self.api_test_status)
         self.discovery_worker = None
         self.discovery_task = None
         model_hint = QLabel('A teszt a modelllista API-t és a hitelesítést ellenőrzi, nem indít fizetős fordítást. A listában nem minden modell képes képeket értelmezni.')
@@ -1041,6 +1059,7 @@ class Overlay(QWidget):
         self.fps_width_input.setValue(int(self.cfg.get('fps_width_percent', 55)))
         self.fps_height_input.setValue(int(self.cfg.get('fps_height_percent', 40)))
         self.settings_status.clear()
+        self.api_test_status.hide()
         self._history_before_settings = not self.history_panel.isHidden()
         if self._history_before_settings:
             self._history_size = self.size()
@@ -1081,18 +1100,36 @@ class Overlay(QWidget):
         self.settings_button.style().unpolish(self.settings_button)
         self.settings_button.style().polish(self.settings_button)
 
+    def set_api_test_status(self, message, state='working'):
+        palette = {
+            'working': ('#17324d', '#5a9ed2', '#e4f2ff'),
+            'success': ('#153b2e', '#43b88a', '#e2fff1'),
+            'error': ('#48232b', '#dc6c7b', '#ffe6ea'),
+        }
+        background, border, foreground = palette[state]
+        self.api_test_status.setStyleSheet(
+            f'QLabel {{ background: {background}; color: {foreground}; '
+            f'border: 1px solid {border}; border-radius: 9px; font-weight: 600; }}')
+        self.api_test_status.setText(message)
+        self.api_test_status.show()
+
+    def show_active_model(self, model, fallback):
+        role = 'TARTALÉK AI' if fallback else 'ELSŐDLEGES AI'
+        self.subtitle.setText(f'FORDÍTÁS FOLYAMATBAN  •  {role}: {model}')
+        self.subtitle.setToolTip(model)
+
     def start_model_request(self, action):
         if self.discovery_worker is not None and self.discovery_worker.isRunning():
             return
         try:
             url = validate_api_url(self.api_url_input.text().strip())
         except ValueError as exc:
-            self.settings_status.setText(str(exc))
+            self.set_api_test_status('✕ ' + str(exc), 'error')
             return
         self.discovery_task = action
         self.test_api_button.setEnabled(False)
         self.load_models_button.setEnabled(False)
-        self.settings_status.setText('Kapcsolódás az API-hoz…')
+        self.set_api_test_status('◌ Kapcsolódás az API-hoz…', 'working')
         worker = ModelDiscovery(url, self.api_key_input.text())
         self.discovery_worker = worker
         worker.result.connect(self.on_discovery_result)
@@ -1107,13 +1144,13 @@ class Overlay(QWidget):
         self.test_api_button.setEnabled(True)
         self.load_models_button.setEnabled(True)
         if not result.get('ok'):
-            self.settings_status.setText('Sikertelen: ' + result.get('error', 'Ismeretlen hiba.'))
+            self.set_api_test_status('✕ Sikertelen kapcsolat: ' + result.get('error', 'Ismeretlen hiba.'), 'error')
             return
         models = result['models']
         if self.discovery_task == 'test':
-            self.settings_status.setText(
-                f'Sikeres API-kapcsolat és hitelesítés. A szolgáltató {len(models)} modellt adott vissza. '
-                'A kiválasztott modell fordítási képességét ez még nem teszteli.')
+            self.set_api_test_status(
+                f'✓ Sikeres API-kapcsolat · {len(models)} elérhető modell. '
+                'A fordítási képességet ez még nem ellenőrzi.', 'success')
             return
         for picker in (self.model_input, self.fallback_input):
             previous = picker.currentText()
@@ -1123,9 +1160,8 @@ class Overlay(QWidget):
             picker.addItems(models)
             picker.setEditText(previous)
             picker.blockSignals(False)
-        self.settings_status.setText(
-            f'{len(models)} modell betöltve. Válassz a legördülő listából, majd mentsd a beállításokat. '
-            'Képfeldolgozásra alkalmas modellt válassz.')
+        self.set_api_test_status(
+            f'✓ {len(models)} modell betöltve. Válaszd ki a kívánt modellt, majd mentsd a beállításokat.', 'success')
 
     shortcuts_changed = Signal()
     shortcut_capture_started = Signal()
@@ -1405,6 +1441,23 @@ class Overlay(QWidget):
     def show_history_item(self, index):
         self.display_history_item(index)
 
+    @staticmethod
+    def history_tooltip(value):
+        text = value.strip()
+        shortened = len(text) > 1200
+        text = text[:1200]
+        paragraphs = []
+        for paragraph in text.splitlines():
+            if not paragraph.strip():
+                paragraphs.append('')
+                continue
+            paragraphs.extend(textwrap.wrap(paragraph, width=72,
+                                            break_long_words=True,
+                                            break_on_hyphens=False) or [''])
+        body = '<br>'.join(html.escape(line) for line in paragraphs)
+        suffix = '<br><br><i>Dupla kattintás: teljes szöveg megnyitása</i>' if shortened else ''
+        return f'<div style="max-width: 480px; white-space: normal;">{body}{suffix}</div>'
+
     def refresh_history(self, *_):
         previous = self.selected_index()
         self.history_list.blockSignals(True)
@@ -1424,7 +1477,7 @@ class Overlay(QWidget):
                 continue
             item = QListWidgetItem(f'{title[:110]}\n{entry.get("time", "")}  •  {folder or "Rendezetlen"}')
             item.setData(Qt.ItemDataRole.UserRole, idx)
-            item.setToolTip(entry['text'][:550])
+            item.setToolTip(self.history_tooltip(entry['text']))
             self.history_list.addItem(item)
             count += 1
             if idx == previous:
@@ -1880,6 +1933,7 @@ def main():
                 overlay.show_message(text)
 
         worker.finished_text.connect(handle_result)
+        worker.model_started.connect(overlay.show_active_model)
         worker.start()
 
     def translate():
