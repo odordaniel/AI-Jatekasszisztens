@@ -7,3 +7,8 @@ keyring>=25,<26
 certifi>=2025.1
 pyinstaller==6.22.3
 setuptools==84.2.1
+
+# Hangrogzites es Gemini hangfeldolgozas
+google-genai>=1.0
+soundcard>=0.4,<1
+numpy>=2,<3

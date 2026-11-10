@@ -21,8 +21,8 @@ import mss
 import requests
 from PIL import Image
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer, QRect, QPoint, QSize, QEvent, QLockFile
-from PySide6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut, QIcon
-from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QFrame, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QTextEdit, QSizeGrip, QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QCheckBox, QSystemTrayIcon, QMenu, QMessageBox, QSpinBox, QScrollArea
+from PySide6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut, QIcon, QCursor
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QFrame, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QTextEdit, QSizeGrip, QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QCheckBox, QTextBrowser, QSystemTrayIcon, QMenu, QMessageBox, QSpinBox, QScrollArea
 
 # A telepített program minden felhasználói fájlt a saját AppData könyvtárába ment.
 APP_DIR = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Local')) / 'AIJatekasszisztens'
@@ -108,9 +108,9 @@ def icon_path():
 
 DEFAULTS = {
     'api_url': 'http://127.0.0.1:8080/api/chat/completions',
-    'api_key': '', 'model': '', 'fallback_model': '',
+    'api_key': '', 'model': '', 'fallback_model': '', 'manual_game': '',
     'max_image_width': 1600,
-    'hotkeys': {'select': 'Ctrl+Shift+T', 'center': '', 'history': 'Ctrl+Shift+H', 'quit': 'Ctrl+Shift+Q'},
+    'hotkeys': {'select': 'Ctrl+Shift+T', 'center': '', 'history': 'Ctrl+Shift+H', 'audio': 'Ctrl+Shift+L', 'quit': 'Ctrl+Shift+Q'},
     'fps_width_percent': 55, 'fps_height_percent': 40,
 }
 
@@ -143,9 +143,9 @@ def load_config():
 # are supported. The hook never consumes input and ignores injected events. Some anti-cheat systems
 # may restrict global hooks or desktop capture.
 ACTION_NAMES = {'select': 'Terület kijelölése', 'center': 'FPS: középső terület fordítása',
-                'history': 'Előzmények', 'quit': 'Ablak bezárása / kijelölés megszakítása'}
+                'history': 'Előzmények', 'audio': 'Élő hangfordítás indítása / leállítása', 'quit': 'Ablak bezárása / kijelölés megszakítása'}
 HOTKEY_DEFAULTS = {'select': 'Ctrl+Shift+T', 'center': '',
-                   'history': 'Ctrl+Shift+H', 'quit': 'Ctrl+Shift+Q'}
+                   'history': 'Ctrl+Shift+H', 'audio': 'Ctrl+Shift+L', 'quit': 'Ctrl+Shift+Q'}
 KEY_NAMES = {'SPACE': 0x20, 'TAB': 0x09, 'INSERT': 0x2D, 'DELETE': 0x2E,
              'HOME': 0x24, 'END': 0x23, 'PAGEUP': 0x21, 'PAGEDOWN': 0x22,
              'UP': 0x26, 'DOWN': 0x28, 'LEFT': 0x25, 'RIGHT': 0x27}
@@ -527,6 +527,111 @@ class ModelDiscovery(QThread):
             self.result.emit({'ok': False, 'error': 'Váratlan hiba a modelllista lekérésekor.'})
 
 
+class ImageGameDetector(QThread):
+    """Conservatively identify a game from explicit, distinctive screenshot evidence."""
+    recognized = Signal(str)
+
+    def __init__(self, image_bytes, settings):
+        super().__init__()
+        self.image_bytes = image_bytes
+        self.settings = dict(settings)
+
+    def run(self):
+        try:
+            url = validate_api_url(self.settings.get('api_url', ''))
+            model = self.settings.get('model', '').strip()
+            if not model:
+                return
+            headers = {'Content-Type': 'application/json'}
+            key = self.settings.get('api_key', '').strip()
+            if key:
+                headers['Authorization'] = 'Bearer ' + key
+            query = ('Azonosítsd a videojátékot KIZÁRÓLAG akkor, ha a képen '
+                     'egyértelmű, név szerint ellenőrizhető, egyedi játékcím vagy '
+                     'kizárólag arra a játékra jellemző szöveges bizonyíték látható. '
+                     'Általános HUD, műfaj, karakterrajz, atmoszféra nem elegendő. '
+                     'Bizonytalanság esetén üres név. Ne találgass. '
+                     'Csak JSON: {"game":"játék címe vagy üres",'
+                     '"evidence":"a képen látható konkrét bizonyíték"}.')
+            payload = {'model': model, 'stream': False, 'messages': [{'role': 'user', 'content': [
+                {'type': 'text', 'text': query},
+                {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' +
+                                                   base64.b64encode(self.image_bytes).decode('ascii')}}]}]}
+            with requests.Session() as session:
+                session.trust_env = False
+                with session.post(url, json=payload, headers=headers, timeout=(10, 45),
+                                  allow_redirects=False, verify=tls_verify_for(url), stream=True) as r:
+                    r.raise_for_status()
+                    raw = r.raw.read(131072, decode_content=True)
+                    answer = json.loads(raw.decode('utf-8'))['choices'][0]['message']['content']
+            if isinstance(answer, list):
+                answer = ''.join(x.get('text', '') for x in answer if isinstance(x, dict))
+            match = re.search(r'\{[\s\S]*?\}', str(answer))
+            if not match:
+                return
+            candidate = json.loads(match.group(0))
+            game = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(candidate.get('game') or '')).strip(' .')[:80]
+            evidence = str(candidate.get('evidence') or '').strip()
+            if 3 <= len(game) <= 80 and len(evidence) >= 8:
+                self.recognized.emit(game)
+        except Exception:
+            logging.debug('AI játékfelismerés nem adott megbízható eredményt.', exc_info=True)
+
+
+def detect_foreground_game():
+    """Return a game-installation folder title only when the Windows path is convincing.
+
+    No API requests, no title guessing and no need for third-party process packages.
+    A regular executable outside a recognized game library never creates a folder.
+    """
+    if os.name != 'nt':
+        return ''
+    try:
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ''
+        pid = ctypes.wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if not pid.value:
+            return ''
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
+        if not handle:
+            return ''
+        try:
+            size = ctypes.wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                return ''
+            exe_path = Path(buffer.value)
+        finally:
+            kernel32.CloseHandle(handle)
+        parts = exe_path.parts
+        lowered = [part.casefold() for part in parts]
+        library_markers = (('steamapps', 'common'), ('epic games',),
+                           ('gog games',), ('xboxgames',), ('gog galaxy', 'games'))
+        game_name = ''
+        for marker in library_markers:
+            for i in range(len(parts) - len(marker)):
+                if tuple(lowered[i:i+len(marker)]) == marker:
+                    game_name = parts[i + len(marker)]
+                    break
+            if game_name:
+                break
+        bad = {'common', 'games', 'launcher', 'bin', 'binaries', 'shipping',
+               'windows', 'system32', 'steam', 'epic games launcher', 'gog galaxy'}
+        if not game_name or game_name.casefold() in bad:
+            return ''
+        # Strip filename-sensitive characters (Windows folder + UI title).
+        game_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', game_name).strip(' .')
+        return game_name[:80] if len(game_name) >= 3 else ''
+    except Exception:
+        logging.debug('Játék automatikus felismerése nem sikerült.', exc_info=True)
+        return ''
+
+
 HISTORY_PATH = ROOT / 'forditasok.json'
 FOLDERS_PATH = ROOT / 'forditas_mappak.json'
 
@@ -614,11 +719,24 @@ class HistoryStore:
             return False
         return True
 
-    def add(self, value):
+    def add(self, value, game_name=''):
         if not value.strip() or value.startswith('Fordítási hiba:') or value == 'Nincs fordítható szöveg.':
-            return
-        self.items.append({'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'text': value})
-        self.save()
+            return False
+        record = {'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'), 'text': value}
+        game = str(game_name or '').strip()[:80]
+        if game:
+            # "Játék mappája" = a beépített előzménykezelő játéknevű mappája,
+            # NOT the game's installation directory.
+            matched = next((folder for folder in self.folders if folder.casefold() == game.casefold()), None)
+            if matched is None and self.create_folder(game):
+                matched = game
+            if matched:
+                record['folder'] = matched
+        self.items.append(record)
+        if not self.save():
+            self.items.pop()
+            return False
+        return True
 
     def save(self):
         try:
@@ -718,6 +836,15 @@ class Overlay(QWidget):
         self._compact_size = QSize(660, 370)
         self._history_size = QSize(660, 680)
         self._settings_size = QSize(660, 680)
+        self._audio_size = QSize(750, 790)
+        self._transcript_size = QSize(700, 760)
+        self._transcript_return_mode = 'history'
+        self._audio_result_open = False
+        self._audio_processing_visible = False
+        self.audio_recorder_toggle = None
+        self._audio_return_mode = 'compact'
+        self.audio_settings_panel = None
+        self._history_nofocus = False
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
@@ -756,6 +883,7 @@ class Overlay(QWidget):
         self.prev_button = self.btn('‹', lambda: self.navigate(-1), 'Előző fordítás', role='top')
         self.next_button = self.btn('›', lambda: self.navigate(1), 'Következő fordítás', role='top')
         self.history_button = self.btn('☷', self.open_history, 'Mentett fordítások és keresés', role='top')
+        self.microphone_button = self.btn('🎙', self.toggle_audio_recording, 'Hangfelvétel indítása/leállítása', role='top')
         self.settings_button = self.btn('⚙', self.toggle_settings, 'API és modell beállításai', role='top')
         self.close_button = self.btn('×', self.hide, 'Ablak bezárása', role='top')
         for widget in (self.prev_button, self.next_button, self.history_button):
@@ -765,13 +893,16 @@ class Overlay(QWidget):
         separator.setStyleSheet('background: #334158; border: 0;')
         separator.setFixedSize(1, 21)
         header.addWidget(separator)
+        header.addWidget(self.microphone_button)
         header.addWidget(self.settings_button)
         header.addWidget(self.close_button)
         content.addLayout(header)
 
         self.subtitle = QLabel('MAGYAR FORDÍTÁS   •   Kijelölés vagy FPS-gyorsfordítás')
         self.subtitle.setObjectName('small')
-        content.addWidget(self.subtitle)
+        subtitle_row = QHBoxLayout()
+        subtitle_row.addWidget(self.subtitle, 1)
+        content.addLayout(subtitle_row)
         self.label = QTextEdit()
         self.label.setObjectName('translation')
         self.label.setReadOnly(True)
@@ -868,6 +999,32 @@ class Overlay(QWidget):
         security_info.setObjectName('small')
         security_info.setWordWrap(True)
         settings_layout.addWidget(security_info)
+        game_title = QLabel('JÁTÉK FELISMERÉSE ÉS ELŐZMÉNYEK')
+        game_title.setObjectName('section')
+        settings_layout.addWidget(game_title)
+        self.game_detection_status = QLabel('Játék felismerésének ellenőrzése…')
+        self.game_detection_status.setWordWrap(True)
+        self.game_detection_status.setObjectName('small')
+        settings_layout.addWidget(self.game_detection_status)
+        self.manual_game_input = QLineEdit(cfg.get('manual_game', ''))
+        self.manual_game_input.setMaxLength(80)
+        self.manual_game_input.setPlaceholderText('Játék címe (ha nem sikerült felismerni)')
+        self.manual_game_input.setToolTip('A képi és hangfordítás közös játékbeállítása.')
+        settings_layout.addWidget(self.manual_game_input)
+        self.game_detection_help = QLabel(
+            'A program először a futó játék telepítési helye alapján keres, '
+            'és az AI is segíthet a fordított tartalom alapján. '
+            'Ha nem sikerül, kézzel is megadhatod. '
+            'Az előzmények a játék nevű mappába kerülnek; ismeretlen játék esetén rendezetlenül maradnak.')
+        self.game_detection_help.setObjectName('small')
+        self.game_detection_help.setWordWrap(True)
+        settings_layout.addWidget(self.game_detection_help)
+        self.game_status_provider = None
+        self.game_override_changed = None
+        self.game_status_timer = QTimer(self)
+        self.game_status_timer.setInterval(2500)
+        self.game_status_timer.timeout.connect(self.refresh_game_status)
+        self.game_status_timer.start()
         shortcut_title = QLabel('GYORSBILLENTYŰK ÉS FPS MÓD')
         shortcut_title.setObjectName('section')
         settings_layout.addWidget(shortcut_title)
@@ -904,6 +1061,14 @@ class Overlay(QWidget):
         fps_note.setObjectName('small')
         fps_note.setWordWrap(True)
         settings_layout.addWidget(fps_note)
+        audio_title = QLabel('ÉLŐ HANGFORDÍTÁS')
+        audio_title.setObjectName('section')
+        settings_layout.addWidget(audio_title)
+        audio_note = QLabel('Az élő magyar felirat mindig átkattintható. A mérete, pozíciója és átlátszósága kizárólag a hangfordítás beállításaiban módosítható.')
+        audio_note.setWordWrap(True)
+        audio_note.setObjectName('small')
+        settings_layout.addWidget(audio_note)
+        settings_layout.addWidget(self.btn('Hangfordítás beállításai…', self.audio_settings_requested.emit))
         self.settings_status = QLabel('')
         self.settings_status.setObjectName('status')
         self.settings_status.setWordWrap(True)
@@ -1022,6 +1187,13 @@ class Overlay(QWidget):
         content.addWidget(self.history_panel, 2)
         self.history_panel.hide()
 
+        self.audio_settings_scroll = QScrollArea()
+        self.audio_settings_scroll.setWidgetResizable(True)
+        self.audio_settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.audio_settings_scroll.setStyleSheet('QScrollArea {background: transparent; border: 0;}')
+        content.addWidget(self.audio_settings_scroll, 1)
+        self.audio_settings_scroll.hide()
+
         bottom = QHBoxLayout()
         self.footer_hint = QLabel('Ablak átméretezése: jobb alsó sarok')
         self.footer_hint.setObjectName('small')
@@ -1036,6 +1208,150 @@ class Overlay(QWidget):
         self.restore_geometry()
         self._restoring_geometry = False
 
+    def toggle_audio_recording(self):
+        if self.audio_recorder_toggle is not None:
+            self.audio_recorder_toggle()
+
+    def set_audio_recording_state(self, active):
+        self.microphone_button.setText('⏹' if active else '🎙')
+        self.microphone_button.setToolTip('Felvétel leállítása és feldolgozása' if active else 'Hangfelvétel indítása')
+        self.microphone_button.setProperty('role', 'danger' if active else 'top')
+        self.microphone_button.style().unpolish(self.microphone_button)
+        self.microphone_button.style().polish(self.microphone_button)
+
+    def show_audio_processing(self):
+        """Show audio processing immediately in the existing image translation window."""
+        self.prepare_translation()
+        self.show_message('A hangfelvétel befejeződött.\n\nFordítás folyamatban…')
+        self.subtitle.setText('HANGFORDÍTÁS  •  Feldolgozás folyamatban')
+        self._audio_processing_visible = True
+
+    def update_audio_processing(self, message):
+        """Update the shared result field without opening any new window."""
+        if not getattr(self, '_audio_processing_visible', False):
+            return
+        if not self.isVisible():
+            return
+        self.label.setPlainText('A hangfelvétel befejeződött.\n\n'
+                                'Fordítás folyamatban…\n\n' + str(message))
+
+    def show_audio_processing_error(self, message):
+        if not getattr(self, '_audio_processing_visible', False):
+            return
+        self._audio_processing_visible = False
+        self.label.setPlainText(str(message))
+        self.subtitle.setText('HANGFORDÍTÁS  •  Feldolgozás befejezve')
+
+    def show_audio_result(self, entries, started, game_title, show_original):
+        """Display the transcript in the SAME QTextEdit used for image translations."""
+        from live_translation import formatted_transcript
+        self._audio_processing_visible = False
+        metadata, html_body = formatted_transcript(entries, started, game_title, show_original)
+        self._transcript_return_mode = ('settings' if not self.settings_panel.isHidden()
+                                        else 'audio' if not self.audio_settings_scroll.isHidden()
+                                        else 'history' if not self.history_panel.isHidden() else 'compact')
+        self._mode_switching = True
+        self.settings_panel.hide()
+        self.history_panel.hide()
+        self.audio_settings_scroll.hide()
+        self.label.show()
+        self.subtitle.show()
+        self.subtitle.setText('LEFORDÍTOTT BESZÉLGETÉS  •  ' + metadata)
+        self.label.setHtml(html_body)
+        self.label.verticalScrollBar().setValue(0)
+        self._audio_result_open = True
+        self.resize(self._transcript_size)
+        self._mode_switching = False
+        self.show()
+        self.raise_()
+
+    def close_audio_result(self):
+        if not self._audio_result_open:
+            return
+        self._transcript_size = self.size()
+        self._mode_switching = True
+        self._audio_result_open = False
+        self.subtitle.setText('MAGYAR FORDÍTÁS   •   Kijelölés vagy FPS-gyorsfordítás')
+        self.label.clear()
+        mode = self._transcript_return_mode
+        if mode == 'history':
+            self.history_panel.show()
+            self.resize(self._history_size)
+            self.refresh_history()
+        elif mode == 'settings':
+            self.settings_panel.show()
+            self.label.hide()
+            self.subtitle.hide()
+            self.resize(self._settings_size)
+        elif mode == 'audio':
+            self.audio_settings_scroll.show()
+            self.label.hide()
+            self.subtitle.hide()
+            self.resize(self._audio_size)
+        else:
+            self.resize(self._compact_size)
+        self._mode_switching = False
+        self.update_history_button()
+        self.geometry_timer.start()
+
+    def attach_audio_settings(self, settings):
+        self.audio_settings_panel = settings
+        self.audio_settings_scroll.setWidget(settings)
+        settings._open_settings_callback = self.show_audio_settings
+        settings._close_settings_callback = self.close_audio_settings
+
+    def show_audio_settings(self):
+        if self._audio_result_open:
+            self.close_audio_result()
+        if self.audio_settings_panel is None:
+            return
+        if not self.audio_settings_scroll.isHidden():
+            self.show()
+            self.raise_()
+            return
+        self._audio_return_mode = ('settings' if not self.settings_panel.isHidden() else
+                                   'history' if not self.history_panel.isHidden() else 'compact')
+        self._mode_switching = True
+        if self._audio_return_mode == 'compact':
+            self._compact_size = self.size()
+        elif self._audio_return_mode == 'history':
+            self._history_size = self.size()
+        else:
+            self._settings_size = self.size()
+        self.settings_panel.hide()
+        self.history_panel.hide()
+        self.label.hide()
+        self.subtitle.hide()
+        self.audio_settings_scroll.show()
+        self.resize(self._audio_size)
+        self._mode_switching = False
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def close_audio_settings(self):
+        if self.audio_settings_scroll.isHidden():
+            return
+        self._audio_size = self.size()
+        self._mode_switching = True
+        self.audio_settings_scroll.hide()
+        mode = self._audio_return_mode
+        if mode == 'settings':
+            self.settings_panel.show()
+            self.resize(self._settings_size)
+        else:
+            self.label.show()
+            self.subtitle.show()
+            if mode == 'history':
+                self.history_panel.show()
+                self.resize(self._history_size)
+            else:
+                self.resize(self._compact_size)
+        self._mode_switching = False
+        self.update_history_button()
+        self.geometry_timer.start()
+
     @staticmethod
     def btn(label, callback, tooltip='', role=''):
         b = QPushButton(label)
@@ -1046,7 +1362,26 @@ class Overlay(QWidget):
         b.clicked.connect(callback)
         return b
 
+    def refresh_game_status(self):
+        if self.game_status_provider is None:
+            return
+        try:
+            recognized, source = self.game_status_provider()
+        except Exception:
+            recognized, source = '', ''
+        if recognized:
+            self.game_detection_status.setText(f'Felismert játék ({source}): {recognized}')
+            self.manual_game_input.setEnabled(False)
+        else:
+            self.game_detection_status.setText('Nem ismertem fel játékot. Megadhatod kézzel.')
+            self.manual_game_input.setEnabled(True)
+
     def toggle_settings(self):
+        if self._audio_result_open:
+            self.close_audio_result()
+        if not self.audio_settings_scroll.isHidden():
+            self.close_audio_settings()
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         if self.settings_panel.isVisible():
             self.close_settings()
             return
@@ -1060,6 +1395,8 @@ class Overlay(QWidget):
         self.fps_height_input.setValue(int(self.cfg.get('fps_height_percent', 40)))
         self.settings_status.clear()
         self.api_test_status.hide()
+        self.manual_game_input.setText(self.cfg.get('manual_game', ''))
+        self.refresh_game_status()
         self._history_before_settings = not self.history_panel.isHidden()
         if self._history_before_settings:
             self._history_size = self.size()
@@ -1163,6 +1500,7 @@ class Overlay(QWidget):
         self.set_api_test_status(
             f'✓ {len(models)} modell betöltve. Válaszd ki a kívánt modellt, majd mentsd a beállításokat.', 'success')
 
+    audio_settings_requested = Signal()
     shortcuts_changed = Signal()
     shortcut_capture_started = Signal()
     shortcut_capture_finished = Signal()
@@ -1191,7 +1529,8 @@ class Overlay(QWidget):
         updated.update(api_url=url, api_key=self.api_key_input.text().strip(),
                        model=model, fallback_model=fallback, hotkeys=shortcuts,
                        fps_width_percent=self.fps_width_input.value(),
-                       fps_height_percent=self.fps_height_input.value())
+                       fps_height_percent=self.fps_height_input.value(),
+                       manual_game=self.manual_game_input.text().strip()[:80])
         try:
             # Persist to the vault FIRST; leave existing configuration untouched on error.
             save_api_key(updated['api_key'])
@@ -1202,6 +1541,8 @@ class Overlay(QWidget):
             return
         self.cfg.clear()
         self.cfg.update(updated)
+        if self.game_override_changed:
+            self.game_override_changed()
         self.close_settings()
         self.subtitle.setText('Beállítások elmentve • Az új gyorsbillentyűk aktívak')
         self.shortcuts_changed.emit()
@@ -1215,7 +1556,11 @@ class Overlay(QWidget):
         super().resizeEvent(event)
         if not self._restoring_geometry:
             if not self._mode_switching:
-                if not self.settings_panel.isHidden():
+                if self._audio_result_open:
+                    self._transcript_size = self.size()
+                elif not self.audio_settings_scroll.isHidden():
+                    self._audio_size = self.size()
+                elif not self.settings_panel.isHidden():
                     self._settings_size = self.size()
                 elif not self.history_panel.isHidden():
                     self._history_size = self.size()
@@ -1239,6 +1584,10 @@ class Overlay(QWidget):
                     'history_height': self._history_size.height(),
                     'settings_width': self._settings_size.width(),
                     'settings_height': self._settings_size.height(),
+                    'audio_width': self._audio_size.width(),
+                    'audio_height': self._audio_size.height(),
+                    'transcript_width': self._transcript_size.width(),
+                    'transcript_height': self._transcript_size.height(),
                     'history_search': self.history_search.text(),
                     'history_folder': self.selected_folder()}
             tmp = self.WINDOW_PATH.with_suffix('.json.tmp')
@@ -1272,6 +1621,12 @@ class Overlay(QWidget):
             self._settings_size = QSize(
                 max(465, min(1400, int(data.get('settings_width', w)))),
                 max(250, min(1100, int(data.get('settings_height', 680)))))
+            self._audio_size = QSize(
+                max(465, min(1400, int(data.get('audio_width', 750)))),
+                max(250, min(1100, int(data.get('audio_height', 790)))))
+            self._transcript_size = QSize(
+                max(465, min(1400, int(data.get('transcript_width', 700)))),
+                max(250, min(1100, int(data.get('transcript_height', 760)))))
             self.setGeometry(x, y, w, h)
             self.history_search.setText(str(data.get('history_search', '')))
             folder = data.get('history_folder', '')
@@ -1423,6 +1778,8 @@ class Overlay(QWidget):
         self.show_history_item(index)
 
     def display_history_item(self, index, show_window=True):
+        if self._audio_result_open:
+            self.close_audio_result()
         if self.settings_panel.isVisible():
             self.close_settings()
         if 0 <= index < len(self.history.items):
@@ -1433,7 +1790,13 @@ class Overlay(QWidget):
                 self.subtitle.setText(f'{title}  •  {entry.get("time", "")}')
             else:
                 self.subtitle.setText(f'MAGYAR FORDÍTÁS  •  {entry.get("time", "")}')
-            self.label.setPlainText(entry['text'])
+            # A hangfordítás a mentett előzmények megnyitásakor is tagolt,
+            # olvasható formában jelenjen meg a közös fordítóablakban.
+            if entry['text'].startswith('Hangfordítás – '):
+                from live_translation import formatted_saved_transcript
+                self.label.setHtml(formatted_saved_transcript(entry['text']))
+            else:
+                self.label.setPlainText(entry['text'])
             if show_window:
                 self.show()
                 self.raise_()
@@ -1571,6 +1934,10 @@ class Overlay(QWidget):
             'Előzmények bezárása' if active else 'Előzmények megnyitása (Ctrl+Shift+H)')
 
     def set_history_open(self, should_open, focus=False, remember=True):
+        if self._audio_result_open:
+            self.close_audio_result()
+        if not self.audio_settings_scroll.isHidden():
+            self.close_audio_settings()
         # The compact translation view and the history view have independent sizes.
         # Expanding history must not permanently grow the translation window.
         was_open = not self.history_panel.isHidden()
@@ -1613,7 +1980,25 @@ class Overlay(QWidget):
         self.set_history_open(self.history_panel.isHidden(), focus=True)
 
 
+    def nativeEvent(self, event_type, message):
+        if os.name == 'nt' and not self.history_panel.isHidden() and self.settings_panel.isHidden() and self.audio_settings_scroll.isHidden():
+            try:
+                import ctypes
+                from ctypes import wintypes
+                msg = wintypes.MSG.from_address(int(message))
+                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                    # Text editing needs keyboard focus. Other history clicks do not.
+                    cursor = self.mapFromGlobal(QCursor.pos())
+                    child = self.childAt(cursor)
+                    if not isinstance(child, (QLineEdit, QComboBox)):
+                        return True, 3  # MA_NOACTIVATE
+            except (ValueError, TypeError, OSError):
+                pass
+        return super().nativeEvent(event_type, message)
+
     def show_history_from_hotkey(self):
+        if not self.audio_settings_scroll.isHidden():
+            self.close_audio_settings()
         # Restore the user's last explicit history choice. Merely opening the
         # window must never turn a collapsed history panel back on.
         preferred = self._history_preference
@@ -1622,12 +2007,18 @@ class Overlay(QWidget):
             self.close_settings()
         if not self.label.toPlainText().strip():
             self.label.setPlainText('Válassz egy korábbi fordítást az alábbi listából.')
-        self.set_history_open(preferred, focus=preferred, remember=False)
+        self.set_history_open(preferred, focus=False, remember=False)
+        # Avoid stealing game focus merely by displaying history. Mouse input
+        # is handled without activation on Windows; explicit text entry may focus.
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.show()
         self.raise_()
-        self.activateWindow()
 
     def prepare_translation(self):
+        if self._audio_result_open:
+            self.close_audio_result()
+        if not self.audio_settings_scroll.isHidden():
+            self.close_audio_settings()
         # Translation requests must not open or retain the history panel.
         self._history_before_settings = False
         if not self.settings_panel.isHidden():
@@ -1635,6 +2026,8 @@ class Overlay(QWidget):
         self.set_history_open(False, remember=False)
 
     def show_message(self, text):
+        if self._audio_result_open:
+            self.close_audio_result()
         if self.settings_panel.isVisible():
             self.close_settings()
         self.subtitle.setText('MAGYAR FORDÍTÁS   •   Kijelölés vagy FPS-gyorsfordítás')
@@ -1734,6 +2127,7 @@ class Hotkeys(QObject):
     center_requested = Signal()
     history_requested = Signal()
     quit_requested = Signal()
+    audio_requested = Signal()
 
     def __init__(self, bindings):
         super().__init__()
@@ -1753,7 +2147,8 @@ class Hotkeys(QObject):
 
     def _emit(self, action):
         {'select': self.translate_requested, 'center': self.center_requested,
-         'history': self.history_requested, 'quit': self.quit_requested}[action].emit()
+         'history': self.history_requested, 'audio': self.audio_requested,
+         'quit': self.quit_requested}[action].emit()
 
     def listen(self):
         self.thread_id = self.kernel32.GetCurrentThreadId()
@@ -1905,8 +2300,72 @@ def main():
 
     history = HistoryStore()
     overlay = Overlay(cfg, history)
+    from live_translation import LiveTranslationSettings
+    import time
+    recent_game = {'name': '', 'last_seen': 0.0}
+
+    def game_detector():
+        game = detect_foreground_game()
+        if game:
+            recent_game.update(name=game, last_seen=time.monotonic())
+            return game
+        # The application window may have focus when recording starts.
+        # Reuse only a very recent, previously confirmed foreground game.
+        if time.monotonic() - recent_game['last_seen'] <= 15.0:
+            return recent_game['name']
+        return ''
+
+    game_poll_timer = QTimer(overlay)
+    game_poll_timer.setInterval(1400)
+    game_poll_timer.timeout.connect(game_detector)
+    game_poll_timer.start()
+    inferred_game = {'name': '', 'last_seen': 0.0}
+
+    def game_status_provider():
+        detected = game_detector()
+        if detected:
+            return detected, 'Windows'
+        if inferred_game['name'] and time.monotonic() - inferred_game['last_seen'] < 3600:
+            return inferred_game['name'], 'AI'
+        return '', ''
+
+    def resolved_game():
+        name, _ = game_status_provider()
+        return name or str(cfg.get('manual_game') or '').strip()[:80]
+
+    def on_game_inferred(game):
+        # The game is never invented when the model has insufficient evidence.
+        game = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(game or '')).strip(' .')[:80]
+        if len(game) < 3 or game_detector():
+            return
+        inferred_game.update(name=game, last_seen=time.monotonic())
+        overlay.refresh_game_status()
+
+    overlay.game_status_provider = game_status_provider
+    overlay.game_override_changed = overlay.refresh_game_status
+    overlay.refresh_game_status()
+
+    def save_audio_history(text, game_title=''):
+        saved = history.add(text, game_title)
+        if saved:
+            overlay.sync_folders()
+            overlay.refresh_history()
+        return saved
+
+    live_settings = LiveTranslationSettings(APP_DIR, save_audio_history, load_config, resolved_game)
+    overlay.attach_audio_settings(live_settings)
+    overlay.audio_settings_requested.connect(live_settings.open_settings)
+    overlay.audio_recorder_toggle = live_settings.toggle
+    live_settings.recording_state.connect(overlay.set_audio_recording_state)
+    live_settings.transcript_ready.connect(overlay.show_audio_result)
+    live_settings.processing_started.connect(overlay.show_audio_processing)
+    live_settings.processing_status.connect(overlay.update_audio_processing)
+    live_settings.processing_empty.connect(overlay.show_audio_processing_error)
+    live_settings.game_inferred.connect(on_game_inferred)
     selector = RegionSelector()
-    active = {'worker': None, 'suppress_result': False}
+    active = {'worker': None, 'suppress_result': False, 'game': ''}
+    game_recognizers = []
+    last_game_probe = {'at': 0.0}
 
     def send_selection(image):
         overlay.prepare_translation()
@@ -1924,7 +2383,33 @@ def main():
         active['worker'] = worker
 
         def handle_result(text):
-            history.add(text)
+            saved_game = active.get('game', '') or resolved_game()
+            history.add(text, saved_game)
+            if (not saved_game and text.strip() and not text.startswith('Fordítási hiba:')
+                    and time.monotonic() - last_game_probe['at'] > 90):
+                last_game_probe['at'] = time.monotonic()
+                detector = ImageGameDetector(buffer.getvalue(), cfg)
+                game_recognizers.append(detector)
+                saved_index = len(history.items) - 1
+                def apply_recognition(game, row=saved_index):
+                    if game_detector() or cfg.get('manual_game'):
+                        return
+                    on_game_inferred(game)
+                    if 0 <= row < len(history.items):
+                        # Assign only the exact saved translation; never reclassify other entries.
+                        record = history.items[row]
+                        if not record.get('folder') and record.get('text') == text:
+                            folder = next((f for f in history.folders if f.casefold() == game.casefold()), None)
+                            if folder is None and history.create_folder(game):
+                                folder = game
+                            if folder:
+                                history.update_item(row, folder=folder)
+                                overlay.sync_folders()
+                                overlay.refresh_history()
+                detector.recognized.connect(apply_recognition)
+                detector.finished.connect(lambda obj=detector: game_recognizers.remove(obj)
+                                          if obj in game_recognizers else None)
+                detector.start()
             if active['suppress_result']:
                 return  # The user closed the overlay while the API request was running.
             if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
@@ -1937,6 +2422,7 @@ def main():
         worker.start()
 
     def translate():
+        active['game'] = resolved_game()
         overlay.prepare_translation()
         if active['worker'] and active['worker'].isRunning():
             overlay.show_message('A fordítás még folyamatban van…')
@@ -1949,6 +2435,7 @@ def main():
             logging.exception('Kijelölési hiba')
 
     def translate_center():
+        active['game'] = resolved_game()
         overlay.prepare_translation()
         if active['worker'] and active['worker'].isRunning():
             overlay.show_message('A fordítás még folyamatban van…')
@@ -2000,6 +2487,8 @@ def main():
     action_translate = menu.addAction('Terület kijelölése')
     action_center = menu.addAction('FPS: középső terület fordítása')
     action_history = menu.addAction('Előzmények')
+    action_audio = menu.addAction('Élő hangfordítás indítása / leállítása')
+    action_audio_settings = menu.addAction('Hangfordítás beállításai…')
     action_settings = menu.addAction('Beállítások')
     menu.addSeparator()
     action_startup = menu.addAction('Automatikus indítás Windowszal')
@@ -2010,6 +2499,8 @@ def main():
     action_translate.triggered.connect(translate)
     action_center.triggered.connect(translate_center)
     action_history.triggered.connect(overlay.show_history_from_hotkey)
+    action_audio.triggered.connect(live_settings.toggle)
+    action_audio_settings.triggered.connect(live_settings.open_settings)
     action_settings.triggered.connect(open_settings)
 
     def toggle_startup(checked):
@@ -2045,6 +2536,7 @@ def main():
             instance.translate_requested.connect(translate)
             instance.center_requested.connect(translate_center)
             instance.history_requested.connect(overlay.show_history_from_hotkey)
+            instance.audio_requested.connect(live_settings.toggle)
             instance.quit_requested.connect(close_current_view)
             current_hotkeys['obj'] = instance
         except Exception as exc:
@@ -2057,6 +2549,7 @@ def main():
         action_translate.setText(f"Terület kijelölése    {binds.get('select', '')}")
         action_center.setText(f"FPS: középső terület    {binds.get('center', '')}")
         action_history.setText(f"Előzmények    {binds.get('history', '')}")
+        action_audio.setText(f"Élő hangfordítás    {binds.get('audio', '')}")
 
     def suspend_hotkeys_for_capture():
         previous = current_hotkeys['obj']
@@ -2079,6 +2572,11 @@ def main():
         overlay.save_geometry()
         if current_hotkeys['obj'] is not None:
             current_hotkeys['obj'].close()
+        if live_settings.request_shutdown():
+            live_settings.worker.finished.connect(shutdown_after_live)
+            overlay.hide()
+            live_settings.hide()
+            return
         worker = active['worker']
         if worker and worker.isRunning():
             # A még futó HTTP-kérés lezárulta után lépünk ki, különben a QThread megsérülhet.
@@ -2089,12 +2587,21 @@ def main():
             return
         app.quit()
 
+    def shutdown_after_live():
+        worker = active['worker']
+        if worker and worker.isRunning():
+            worker.finished.connect(app.quit)
+        else:
+            app.quit()
+
     action_quit.triggered.connect(shutdown)
     bind_hotkeys()
 
     # A program induláskor kizárólag a tálcán jelenik meg, nem nyit fordítóablakot.
     # Nem készül folyamatos képernyőkép. Csak kijelöléskor történik rögzítés.
     code = app.exec()
+    live_settings.subtitle.hide()
+    live_settings.hide()
     tray.hide()
     singleton.unlock()
     return code
