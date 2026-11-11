@@ -30,7 +30,7 @@ ROOT = APP_DIR
 CONFIG_PATH = ROOT / 'config.json'
 # Serializes in-process reads/writes; QLockFile separately prevents a second app instance.
 _STORAGE_LOCK = threading.RLock()
-APP_VERSION = '1.9.3'  # Update when publishing the next release
+APP_VERSION = '2.0.0'  # Update when publishing the next release
 
 # Első indításkor áthozzuk a meglévő parancssoros kiadás beállításait és előzményeit.
 def migrate_previous_install():

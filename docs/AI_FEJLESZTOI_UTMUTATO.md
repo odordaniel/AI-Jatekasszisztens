@@ -1,14 +1,15 @@
-# AI Játékasszisztens v1.9 – fejlesztői átadás más AI számára
+# AI Játékasszisztens v2.0.0 – fejlesztői útmutató
 
 ## Projekt és hatókör
-Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet jelöl ki vagy FPS-ben a középső területet rögzíti, majd a JPEG képet OpenAI-kompatibilis multimodális Chat Completions API-ra küldi magyar fordításért. Ez a csomag **csak dokumentációt ad hozzá** a v1.9-hez; az alkalmazás forrása és buildje változatlan. A v1.8-at a felhasználó működőnek jelezte; v1.9 Windows alatt itt nincs tesztelve.
+Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet jelöl ki vagy FPS-ben a középső területet rögzíti, majd a JPEG képet OpenAI-kompatibilis multimodális Chat Completions API-ra küldi magyar fordításért. A 2.0 kiadásban hangfordítás (`src/live_translation.py`), offline játékfelismerés (`src/game_detection.py`), többes kijelölést és fájlkezelő műveleteket biztosító előzménykezelés is működik. A fordításokat a felhasználó a jelenlegi Windowsos használatában működőnek jelezte; a teljes kiadási buildet és regressziós ellenőrzést külön kell lefuttatni.
 
 ## Olvasási sorrend és fájlok
 1. `AI_START_HERE.md` – belépési pont.
 2. `docs/AI_FEJLESZTOI_UTMUTATO.md` – jelen részletes útmutató.
 3. `README.md` – felhasználói útmutató.
-4. `src/assistant.py` – teljes alkalmazáskód, ne cseréld le általános sablonnal.
-5. `requirements.txt`, `build_portable.bat`, `build_portable.ps1` – build; `src/app.ico` – ikon.
+4. `src/assistant.py` – fő alkalmazáskód, ne cseréld le általános sablonnal.
+5. `src/live_translation.py` és `src/game_detection.py` – hangfeldolgozás és offline felismerés.
+6. `requirements.txt`, `build_portable.bat`, `build_portable.ps1` – build; `src/app.ico` – ikon.
 
 ## Kód térképe (src/assistant.py)
 - `main()` – QApplication, egy példány (`QLockFile`), tálcaikon, parancsok és szálak életciklusa.
@@ -16,7 +17,9 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - `RegionSelector(QWidget)` – interaktív területkijelölés és megszakítás.
 - `Translator(QThread)` – JPEG base64 kép + fordítási prompt, HTTP-kérés, elsődleges/fallback modell, hibaüzenet.
 - `models_endpoint`, `fetch_available_models`, `ModelDiscovery(QThread)` – API-kapcsolat és modelllista.
-- `HistoryStore` – előzmények, mappák, átnevezés, áthelyezés, törlés, JSON mentés.
+- `HistoryStore` – előzmények, mappák, másolás/beillesztés, átnevezés, áthelyezés, többes törlés, JSON mentés.
+- `src/game_detection.py` – folyamat-, Steam/Epic- és helyi EXE-párosítás alapú, AI-mentes játékazonosítás.
+- `src/live_translation.py` – hangfelvétel, átírás, fordítás, megszakítás és helyreállítható feldolgozás.
 - `ShortcutRecorder(QLineEdit)` – lenyomott billentyű/egérgomb rögzítése.
 - `parse_hotkey`, `normalize_hotkeys`, `Hotkeys` – kombinációk, ütközések, globális Windows bemenet.
 - `validate_api_url`, `tls_verify_for` – végpont- és HTTPS-ellenőrzés.
@@ -32,7 +35,9 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - A fordítási, előzményes és beállításnézet külön méretet tárol; az ablak pozíciója is mentett.
 - A „kilépés” gyorsbillentyű a látható ablakot rejti el, kijelölés közben megszakít, **nem zárja be** a tálcán futó programot. Teljes kilépés a tálcamenüből.
 - Gyorsbillentyűk szabadon rögzíthetők, Mouse3 (görgő), Mouse4, Mouse5 támogatott; játékbeli gombnyomást a hook nem nyeli el.
-- Előzmények kereshetők, átnevezhetők, mappákba rendezhetők, törölhetők; törlési megerősítés ugyanabban az ablakban.
+- Előzmények kereshetők, jobb kattintásos menüből kezelhetők, Ctrl/Shift többes kijelöléssel másolhatók, mozgathatók, átnevezhetők és törölhetők; a törlési megerősítés ugyanabban az ablakban marad.
+- Kép- és hangfordítás esetén a felismert játék mappájába kerülnek a mentések; törölt mappa újralétrejön, amennyiben a játék felismerése sikeres. Ismeretlen játéknál nem szabad az előző játék mappájába menteni.
+- A felismerés a Windows-folyamatokból, helyi telepítési adatokból és mentett párosításokból dolgozik. Nincs képalapú vagy hangszöveges AI-játékazonosítás.
 - API URL, kulcs, elsődleges/fallback modell és modelllista lekérés a beállításokban.
 - Az API **képet** kap, nem pusztán felismert szöveget; nincs folyamatos képernyőmentés.
 
@@ -40,6 +45,7 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 Felhasználói adatok: `%LOCALAPPDATA%\AIJatekasszisztens`:
 - `config.json` – URL, modell, gyorsbillentyűk; API-kulcsot **nem** szabad plaintext tárolni.
 - `forditasok.json` – fordítások; `forditas_mappak.json` – mappák.
+- A játékfelismerés kézi EXE-párosításai és hangfeldolgozási állapota: a tényleges konfigurációs/mentési implementáció szerint; módosítás előtt ellenőrizd a kódot.
 - `ablak_beallitasok.json` – nézet- és ablakállapot.
 - `caddy-root.crt` – opcionális Caddy belső CA, csak `.home.arpa` HTTPS-hez.
 - `hiba.log` – hibák, titkok nélkül; `application.lock` – egyetlen példány.
@@ -64,7 +70,7 @@ Windows, rövid könyvtárútvonal ajánlott (`C:\AIJA`), mert a PySide6 telepí
 - Ne állíts Windowsos működést igazoltnak pusztán szintaktikai teszt alapján.
 
 ## Ismert korlátok
-FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrögzítést. A fallback modell jelenleg ugyanazt az API URL-t és kulcsot használja. A modelllista nem garantál képfeldolgozási képességet. A „portable” EXE nem jelenti a profil hordozhatóságát: az adatok AppDatában vannak. A v1.8 állapotmentési viselkedése kifejezetten fontos regressziós eset.
+FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrögzítést. A fallback modell jelenleg ugyanazt az API URL-t és kulcsot használja. A modelllista nem garantál képfeldolgozási képességet. A „portable” EXE nem jelenti a profil hordozhatóságát: az adatok AppDatában vannak. A képi és hangfordítás közötti játék-mappahozzárendelés, valamint az előzményállapot megőrzése kiemelt regressziós eset.
 
 ## Átadási szabály más AI-nak
-Mindig a v1.9 `src/assistant.py` konkrét függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A jelen dokumentáció hozzáadása **nem módosítja az alkalmazás kódját**.
+Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.

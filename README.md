@@ -1,10 +1,10 @@
-# AI Játékasszisztens
+# AI Játékasszisztens 2.0
 
 **Játssz a saját nyelveden.**
 
-Nyílt forráskódú, magyar nyelvű AI-fordító Windowsra, amely segít megérteni a játékokban megjelenő idegen nyelvű szövegeket.
+Nyílt forráskódú, magyar nyelvű AI-fordító Windows 11-re: játékbeli képernyőszövegek és rögzített játékhang fordításához.
 
-Kijelölöd a képernyő megfelelő részét, az alkalmazás pedig mesterséges intelligencia segítségével magyarra fordítja a tartalmát — anélkül, hogy ki kellene lépned a játékból.
+Játék közben kijelölhetsz képernyőterületet, vagy hangfelvételt készíthetsz, és magyar fordítást kérhetsz. Az előzményeket a program játékok szerint rendszerezi.
 
 [![Windows](https://img.shields.io/badge/Windows-11-0078D4?style=flat-square&logo=windows11&logoColor=white)](https://www.microsoft.com/windows/windows-11)
 [![License](https://img.shields.io/github/license/odordaniel/AI-Jatekasszisztens?style=flat-square)](LICENSE)
@@ -19,7 +19,7 @@ Kijelölöd a képernyő megfelelő részét, az alkalmazás pedig mesterséges 
 
 Az AI Játékasszisztens azoknak készült, akik szeretnék megérteni a játékok történetét, párbeszédeit, feladatait és egyéb szövegeit, akkor is, ha a játék nem kínál magyar nyelvet.
 
-Az alkalmazás egy kijelölt képernyőrész képét küldi el egy képfeldolgozásra alkalmas AI-modellnek, amely felismeri és magyarra fordítja a megjelenő szöveget.
+A képi fordítás kijelölt képernyőrészből vagy FPS-gyorsfordításból dolgozik, OpenAI-kompatibilis, képfeldolgozást támogató API-val. A hangfordítás rögzített hangrészleteket dolgoz fel, Gemini-alapú átírással és külön fordítási modellel. A felismert játék neve a helyi Windows-folyamat és a rendelkezésre álló telepítési adatok alapján kerülhet az előzményekhez; a játék azonosításához nincs szükség AI-ra.
 
 Nincs szükség a játék fájljainak módosítására vagy külön magyarítás telepítésére.
 
@@ -30,9 +30,11 @@ Nincs szükség a játék fájljainak módosítására vagy külön magyarítás
 | **AI-alapú fordítás** | Játékbeli szövegek értelmezése és magyarra fordítása |
 | **Területkijelölés** | A fordítandó képernyőrész szabadon kiválasztható |
 | **FPS-gyorsfordítás** | A képernyő középső területének gyors feldolgozása |
+| **Hangfordítás** | Játékhang rögzítése, beszédátírás és magyar fordítás; időbélyegek és beszélőjelölés, amikor a szolgáltató biztosítja |
+| **Offline játékfelismerés** | Aktív Windows-folyamat, Steam/Epic telepítési adatok és helyi EXE–játéknév párosítások |
 | **Gyorsbillentyűk** | Testreszabható billentyű- és támogatott egérgomb-kombinációk |
 | **Fordítási panel** | A magyar szöveg külön, könnyen kezelhető ablakban jelenik meg |
-| **Fordítási előzmények** | Korábbi fordítások megőrzése, keresése és rendszerezése |
+| **Előzmény-fájlkezelő** | Mappák, keresés, jobb kattintásos menü, többes kijelölés, másolás, beillesztés, átnevezés, áthelyezés, törlés |
 | **AI-modellválasztás** | Elsődleges és tartalék modell beállítása |
 | **Saját API-végpont** | Kompatibilis helyi vagy távoli AI-szolgáltatás használata |
 | **Windows-integráció** | Tálcaikon és opcionális automatikus indítás |
@@ -75,28 +77,35 @@ Indíts el egy játékot, majd használd a gyorsbillentyűket:
 |---|---|
 | `Ctrl + Shift + T` | Képernyőterület kijelölése és fordítása |
 | `Ctrl + Shift + H` | Fordítási előzmények |
+| `Ctrl + Shift + L` | Hangfelvétel indítása / leállítása |
 | `Ctrl + Shift + Q` | Ablak bezárása vagy kijelölés megszakítása |
 
-Az FPS-gyorsfordításhoz külön gyorsbillentyű rendelhető.
+A hangfordítás alapértelmezett gyorsbillentyűje `Ctrl + Shift + L`; külön hangfordítási beállításokkal használható. Az FPS-gyorsfordításhoz külön gyorsbillentyű rendelhető.
 
 A gyorsbillentyűk a beállításokban módosíthatók.
 
 ### 3. Fordítások kezelése
 
-A korábban elkészült fordítások az előzmények között visszakereshetők. A bejegyzéseket átnevezheted, mappákba rendezheted vagy törölheted.
+A korábban elkészült kép- és hangfordítások az előzmények között visszakereshetők. A listában `Ctrl`/`Shift` segítségével több elemet jelölhetsz ki; jobb kattintással vagy a `Ctrl+C`, `Ctrl+V`, `F2`, `Delete` billentyűkkel másolhatsz, beilleszthetsz, átnevezhetsz és törölhetsz. Új mappát is létrehozhatsz, elemeket áthelyezhetsz. Ezek a műveletek az alkalmazás mentett fordításaira vonatkoznak, nem a Windows fájlrendszerére.
+
+### 4. Játékfelismerés és mentés
+
+A program az előtérben futó játék folyamatából, a telepített játékok helyi adataiból vagy manuálisan mentett EXE-párosításból azonosíthatja a játékot. A játék neve automatikusan frissülhet a beállításokban, és a fordítások a hozzá tartozó mappába kerülnek. Ha a korábbi mappát törölted, egy új, megfelelően azonosított fordítás mentésekor ismét létrejöhet. Ismeretlen játék esetén a mentés a rendezetlen előzmények közé kerül. A játék felismerése nem használ képelemző AI-t vagy a párbeszédek szövegét.
 
 ## Adatvédelem és biztonság
 
 A projekt célja, hogy az AI-fordítás használata mellett a felhasználó megtarthassa az ellenőrzést a saját adatai és AI-szolgáltatása felett.
 
 - **Kérésre történő képfeldolgozás:** képernyőkép csak kifejezett fordításkéréskor kerül az AI-végpontra.
+- **Hangfordítás adatforgalma:** a rögzített hangrészletek a beállított beszédátíró szolgáltatóhoz, az átirat pedig a beállított fordítási szolgáltatóhoz kerülhet.
+- **Offline játékfelismerés:** a folyamat- és telepítési adatok helyi vizsgálata nem igényel felhőszolgáltatást.
 - **Biztonságos API-kulcs tárolás:** a kulcsot a Windows Credential Manager kezeli.
 - **Titkosított kapcsolatok:** távoli végpontokhoz HTTPS szükséges; a titkosítatlan HTTP kizárólag localhost esetén engedélyezett.
 - **Helyi beállítások:** a beállítások és fordítási előzmények a felhasználói profilban tárolódnak.
 - **Ellenőrizhető kiadások:** a verziózott ZIP-csomagokhoz SHA-256 ellenőrzőösszeg tartozik.
 - **Nyílt forráskód:** az alkalmazás működése és biztonsági megoldásai szabadon ellenőrizhetők.
 
-A fordításhoz elküldött képek feldolgozását és esetleges tárolását a kiválasztott AI-szolgáltató adatkezelési szabályai is befolyásolják.
+A feldolgozásra elküldött képek, hangrészletek és átiratok kezelésére az adott AI-szolgáltatók adatkezelési szabályai is érvényesek.
 
 További információ: [Security Policy](SECURITY.md).
 
@@ -113,7 +122,7 @@ A felhasználói beállítások és előzmények külön, a `%LOCALAPPDATA%\AIJa
 
 Az alkalmazás Pythonban készül, PySide6-alapú grafikus felülettel. A Windows-portable kiadást PyInstaller állítja elő.
 
-**Főbb technológiák:** Python · PySide6 · MSS · Pillow · Requests · Windows Credential Manager · PyInstaller
+**Főbb technológiák:** Python · PySide6 · MSS · Pillow · Requests · SoundCard · NumPy · Gemini API · Windows Credential Manager · PyInstaller
 
 A projekt GitHub Actions munkafolyamatai:
 
@@ -132,7 +141,7 @@ A forráskód letöltése vagy klónozása után Windows alatt futtasd:
 
 A sikeres build eredménye a `dist\AIJatekasszisztens` mappában található.
 
-A projekt függőségeit a `requirements.txt` és `requirements-lock.txt` fájlok tartalmazzák.
+A projekt függőségeit a `requirements.txt` és `requirements-lock.txt` fájlok tartalmazzák. A 2.0.0 kiadás részletes változásait a [`CHANGELOG.md`](CHANGELOG.md) tartalmazza.
 
 ## Közreműködés
 
