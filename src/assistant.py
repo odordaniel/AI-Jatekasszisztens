@@ -47,7 +47,7 @@ def migrate_previous_install():
                     shutil.copy2(src, dst)
                     break
                 except OSError:
-                    logging.exception('Régi beállítás átvétele sikertelen: %s', filename)
+                    logging.warning('Régi beállítás átvétele sikertelen: %s', filename)
 
 
 def tls_verify_for(url):

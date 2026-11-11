@@ -62,6 +62,8 @@ class Devices(QThread):
         try:
             import soundcard as sc  # Must remain outside Qt GUI thread (Windows COM).
             self.loaded.emit([(s.name, s.id) for s in sc.all_speakers()])
+        except ImportError:
+            self.failed.emit('Hiányzik a soundcard csomag. Telepítsd a requirements.txt függőségeit, vagy használd a teljes portable csomagot.')
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
