@@ -425,9 +425,12 @@ class LiveWorker(QThread):
                                 current.setframerate(sample_rate)
                                 frames_written = 0
                             samples = recorder.record(numframes=block_frames)
-                            pcm = np.clip(np.asarray(samples[:,0],dtype=np.float32)*32767,
-                                          -32768,32767).astype('<i2')
-                            current.writeframes(pcm.tobytes())
+                            pcm_float = np.asarray(samples[:, 0], dtype=np.float32).copy()
+                            np.multiply(pcm_float, 32767, out=pcm_float)
+                            np.clip(pcm_float, -32768, 32767, out=pcm_float)
+                            pcm = pcm_float.astype('<i2')
+                            # wave.close() fixes the final header once per clip; no per-block rewrite.
+                            current.writeframesraw(pcm.tobytes())
                             frames_written += len(pcm)
                 finally:
                     if current is not None:

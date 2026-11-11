@@ -17,9 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import mss
 import requests
-from PIL import Image
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer, QRect, QPoint, QSize, QEvent, QLockFile
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut, QIcon, QCursor
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QFrame, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QTextEdit, QSizeGrip, QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QCheckBox, QTextBrowser, QSystemTrayIcon, QMenu, QMessageBox, QSpinBox, QScrollArea
@@ -1115,7 +1113,12 @@ class Overlay(QWidget):
         self.history_search = QLineEdit()
         self.history_search.setPlaceholderText('Keresés címben, tartalomban vagy dátumban…')
         self.history_search.setClearButtonEnabled(True)
-        self.history_search.textChanged.connect(self.refresh_history)
+        # Search is coalesced while typing; all non-search refreshes stay immediate.
+        self._history_search_timer = QTimer(self)
+        self._history_search_timer.setSingleShot(True)
+        self._history_search_timer.setInterval(180)
+        self._history_search_timer.timeout.connect(self.refresh_history)
+        self.history_search.textChanged.connect(lambda _text: self._history_search_timer.start())
         history_layout.addWidget(self.history_search)
 
         folder_row = QHBoxLayout()
@@ -1135,6 +1138,10 @@ class Overlay(QWidget):
         self.history_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.history_list.setToolTip('Dupla kattintás: megnyitás • F2: átnevezés')
         self.history_list.itemDoubleClicked.connect(self.select_history)
+        # Formatting every long transcript during each refresh is costly.
+        # Generate the identical tooltip on demand when a row is hovered.
+        self.history_list.setMouseTracking(True)
+        self.history_list.itemEntered.connect(self._show_history_tooltip)
         self.history_list.currentItemChanged.connect(self.on_selection_change)
         history_layout.addWidget(self.history_list, 1)
         self.rename_shortcut = QShortcut(QKeySequence('F2'), self.history_list)
@@ -1836,7 +1843,15 @@ class Overlay(QWidget):
         suffix = '<br><br><i>Dupla kattintás: teljes szöveg megnyitása</i>' if shortened else ''
         return f'<div style="max-width: 480px; white-space: normal;">{body}{suffix}</div>'
 
+    def _show_history_tooltip(self, item):
+        if item is None or item.toolTip():
+            return
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if isinstance(idx, int) and 0 <= idx < len(self.history.items):
+            item.setToolTip(self.history_tooltip(self.history.items[idx]['text']))
+
     def refresh_history(self, *_):
+        self._history_search_timer.stop()
         previous = self.selected_index()
         self.history_list.blockSignals(True)
         self.history_list.clear()
@@ -1855,7 +1870,6 @@ class Overlay(QWidget):
                 continue
             item = QListWidgetItem(f'{title[:110]}\n{entry.get("time", "")}  •  {folder or "Rendezetlen"}')
             item.setData(Qt.ItemDataRole.UserRole, idx)
-            item.setToolTip(self.history_tooltip(entry['text']))
             self.history_list.addItem(item)
             count += 1
             if idx == previous:
@@ -2065,6 +2079,9 @@ class RegionSelector(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def begin(self):
+        # Import screenshot-only dependencies when capturing, not at startup.
+        import mss
+        from PIL import Image
         # A képet még a kijelölőréteg megjelenése előtt rögzítjük.
         screen = QApplication.primaryScreen()
         self.screen_rect = screen.geometry()
@@ -2462,17 +2479,20 @@ def main():
         # Allow the previous overlay to disappear before capturing the desktop.
         def capture_center():
             try:
+                import mss
+                from PIL import Image
                 with mss.MSS() as sct:
-                    shot = sct.grab(sct.monitors[1])
-                image = Image.frombytes('RGB', shot.size, shot.rgb)
-                w = max(15, min(100, int(cfg.get('fps_width_percent', 55)))) / 100.0
-                h = max(15, min(100, int(cfg.get('fps_height_percent', 40)))) / 100.0
-                crop_width = round(image.width * w)
-                crop_height = round(image.height * h)
-                left = (image.width - crop_width) // 2
-                top = (image.height - crop_height) // 2
-                crop = image.crop((left, top, left + crop_width, top + crop_height))
-                image.close()
+                    monitor = sct.monitors[1]
+                    w = max(15, min(100, int(cfg.get('fps_width_percent', 55)))) / 100.0
+                    h = max(15, min(100, int(cfg.get('fps_height_percent', 40)))) / 100.0
+                    crop_width = round(monitor['width'] * w)
+                    crop_height = round(monitor['height'] * h)
+                    region = {'left': monitor['left'] + (monitor['width'] - crop_width) // 2,
+                              'top': monitor['top'] + (monitor['height'] - crop_height) // 2,
+                              'width': crop_width, 'height': crop_height}
+                    shot = sct.grab(region)
+                # Only convert the requested region to RGB; do not allocate the full screen.
+                crop = Image.frombytes('RGB', shot.size, shot.rgb)
                 send_selection(crop)
             except Exception as exc:
                 overlay.show_message(f'FPS képrögzítési hiba: {exc}')
