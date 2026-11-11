@@ -1,6 +1,6 @@
 import ast, tempfile, threading, json, unittest
 from pathlib import Path
-SRC=Path('/mnt/data/stage4/src/assistant.py')
+SRC=Path(__file__).resolve().parents[1] / 'src' / 'assistant.py'
 tree=ast.parse(SRC.read_text())
 funcs=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('write_config','load_config')]
 class StorageTests(unittest.TestCase):
