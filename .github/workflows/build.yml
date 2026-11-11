@@ -92,9 +92,17 @@ jobs:
       - name: Check Python syntax
         shell: pwsh
         run: |
-          python -m py_compile src/assistant.py
+          python -m py_compile src/assistant.py src/live_translation.py
           if ($LASTEXITCODE -ne 0) {
             throw 'Python syntax check failed.'
+          }
+
+      - name: Run regression tests
+        shell: pwsh
+        run: |
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Regression tests failed.'
           }
 
       - name: Build portable EXE
