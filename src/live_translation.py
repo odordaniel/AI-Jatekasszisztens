@@ -226,69 +226,6 @@ class LiveWorker(QThread):
                     errors.append(f'{model}: {type(exc).__name__}: {exc}')
         raise RuntimeError(' | '.join(errors))
 
-    def _infer_context(self, turns):
-        """Try to recognize ONLY the game, never character names or voice identities.
-
-        The caller may already have an unambiguous installed-game folder. No
-        transcript inference should override that. A vague genre/dialogue is
-        not sufficient evidence for automatic history categorization.
-        """
-        if self.inferred_game or not turns or not self.translate_model:
-            return
-        fragments = []
-        for _, source in turns:
-            fragments.append(source)
-            if sum(len(x) for x in fragments) > 6000:
-                break
-        excerpt = '\n'.join(fragments)
-        if len(excerpt.strip()) < 150:
-            return
-        prompt = (
-            'Az alábbi videojáték-párbeszédből csak akkor azonosíts játékot, '
-            'ha több EGYEDI, KONKRÉT és összetartozó, a szövegben ténylegesen '
-            'szereplő bizonyíték alapján gyakorlatilag kétségtelen az azonosság. '
-            'Általános párbeszédből, zsánerből, kitalált karakternevekből NE '
-            'következtess. Ha bizonytalan vagy, térj vissza üres névvel. '
-            'Ne próbálj szereplőket megnevezni. Kizárólag JSON: '
-            '{"game":"", "evidence":["idézet 1", "idézet 2"]}.\n' + excerpt
-        )
-        parsed = urlsplit(self.translate_url)
-        if parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1')):
-            return
-        ca = Path.home() / 'AppData' / 'Local' / 'AIJatekasszisztens' / 'caddy-root.crt'
-        verify = str(ca) if (parsed.hostname or '').endswith('.home.arpa') and ca.is_file() else certifi.where()
-        try:
-            with requests.Session() as session:
-                session.trust_env = False
-                resp = session.post(self.translate_url, headers={'Content-Type':'application/json',
-                    **({'Authorization':'Bearer '+self.translate_key} if self.translate_key else {})},
-                    json={'model':self.translate_model,'stream':False,
-                          'messages':[{'role':'user','content':prompt}]},
-                    timeout=(8,50), verify=verify, allow_redirects=False)
-                resp.raise_for_status()
-                answer = resp.json()['choices'][0]['message']['content']
-            if isinstance(answer,list):
-                answer=''.join(x.get('text','') for x in answer if isinstance(x,dict))
-            answer=str(answer).strip()
-            if answer.startswith('```'):
-                answer=re.sub(r'^```(?:json)?\s*|\s*```$', '', answer, flags=re.I)
-            obj=json.loads(answer)
-            if not isinstance(obj,dict):
-                return
-            game=str(obj.get('game') or '').strip()
-            evidence=obj.get('evidence')
-            # Require multiple independently present, concrete source clues.
-            if not isinstance(evidence,list) or len(evidence)<2 or not game:
-                return
-            if any(not isinstance(clue,str) or len(clue.strip())<5 or clue.casefold() not in excerpt.casefold()
-                   for clue in evidence[:2]):
-                return
-            game = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', game).strip(' .')
-            if 3 <= len(game) <= 80:
-                self.inferred_game = game
-        except Exception:
-            logging.info('A játék automatikus felismeréséhez kevés adat áll rendelkezésre.')
-
     def _save_entry(self, source, translation, used_model, error='', speaker='', elapsed=None):
         # Word-level offsets refer to the start of the recording, not translation time.
         elapsed = max(0.0, float(elapsed or 0.0))
@@ -484,11 +421,6 @@ class LiveWorker(QThread):
                 if not all_turns:
                     self.status.emit('Nem találtam felismerhető beszédet a felvételen.')
                     return
-                # Recognize a game title only when supported by specific evidence.
-                first_clip=[(key.split(':',1)[1],source) for key,source,_ in all_turns
-                            if key.startswith('clip1:')]
-                self.status.emit('Játék automatikus felismerésének ellenőrzése…')
-                self._infer_context(first_clip)
                 count=len(all_turns)
                 for i,(key,source,elapsed) in enumerate(all_turns,1):
                     if self.cancel.is_set():
@@ -776,7 +708,6 @@ class LiveTranslationSettings(QWidget):
     processing_started = Signal()
     processing_status = Signal(str)
     processing_empty = Signal(str)
-    game_inferred = Signal(str)
     recording_state = Signal(bool)
     """All subtitle interaction is intentionally confined to this settings window."""
     def __init__(self, app_dir, history_callback, app_config_provider=None, game_detector=None):
@@ -1163,9 +1094,6 @@ class LiveTranslationSettings(QWidget):
             self.status.setText('Hangfordítási hiba – részletek a beállításokban: ' + message)
 
     def _completed(self, entries, started):
-        if (self.worker and self.worker.inferred_game
-                and self.worker.inferred_game != getattr(self, '_provided_game', '')):
-            self.game_inferred.emit(self.worker.inferred_game)
         if not entries:
             message = ('A felvételben nem találtam fordítható beszédet, '
                        'vagy a feldolgozás hibával leállt.')

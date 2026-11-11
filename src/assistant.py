@@ -535,109 +535,8 @@ class ModelDiscovery(QThread):
             self.result.emit({'ok': False, 'error': 'Váratlan hiba a modelllista lekérésekor.'})
 
 
-class ImageGameDetector(QThread):
-    """Conservatively identify a game from explicit, distinctive screenshot evidence."""
-    recognized = Signal(str)
-
-    def __init__(self, image_bytes, settings):
-        super().__init__()
-        self.image_bytes = image_bytes
-        self.settings = dict(settings)
-
-    def run(self):
-        try:
-            url = validate_api_url(self.settings.get('api_url', ''))
-            model = self.settings.get('model', '').strip()
-            if not model:
-                return
-            headers = {'Content-Type': 'application/json'}
-            key = self.settings.get('api_key', '').strip()
-            if key:
-                headers['Authorization'] = 'Bearer ' + key
-            query = ('Azonosítsd a videojátékot KIZÁRÓLAG akkor, ha a képen '
-                     'egyértelmű, név szerint ellenőrizhető, egyedi játékcím vagy '
-                     'kizárólag arra a játékra jellemző szöveges bizonyíték látható. '
-                     'Általános HUD, műfaj, karakterrajz, atmoszféra nem elegendő. '
-                     'Bizonytalanság esetén üres név. Ne találgass. '
-                     'Csak JSON: {"game":"játék címe vagy üres",'
-                     '"evidence":"a képen látható konkrét bizonyíték"}.')
-            payload = {'model': model, 'stream': False, 'messages': [{'role': 'user', 'content': [
-                {'type': 'text', 'text': query},
-                {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,' +
-                                                   base64.b64encode(self.image_bytes).decode('ascii')}}]}]}
-            with requests.Session() as session:
-                session.trust_env = False
-                with session.post(url, json=payload, headers=headers, timeout=(10, 45),
-                                  allow_redirects=False, verify=tls_verify_for(url), stream=True) as r:
-                    r.raise_for_status()
-                    raw = r.raw.read(131072, decode_content=True)
-                    answer = json.loads(raw.decode('utf-8'))['choices'][0]['message']['content']
-            if isinstance(answer, list):
-                answer = ''.join(x.get('text', '') for x in answer if isinstance(x, dict))
-            match = re.search(r'\{[\s\S]*?\}', str(answer))
-            if not match:
-                return
-            candidate = json.loads(match.group(0))
-            game = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(candidate.get('game') or '')).strip(' .')[:80]
-            evidence = str(candidate.get('evidence') or '').strip()
-            if 3 <= len(game) <= 80 and len(evidence) >= 8:
-                self.recognized.emit(game)
-        except Exception:
-            logging.debug('AI játékfelismerés nem adott megbízható eredményt.', exc_info=True)
-
-
-def detect_foreground_game():
-    """Return a game-installation folder title only when the Windows path is convincing.
-
-    No API requests, no title guessing and no need for third-party process packages.
-    A regular executable outside a recognized game library never creates a folder.
-    """
-    if os.name != 'nt':
-        return ''
-    try:
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
-        hwnd = user32.GetForegroundWindow()
-        if not hwnd:
-            return ''
-        pid = ctypes.wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        if not pid.value:
-            return ''
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid.value)
-        if not handle:
-            return ''
-        try:
-            size = ctypes.wintypes.DWORD(32768)
-            buffer = ctypes.create_unicode_buffer(size.value)
-            if not kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
-                return ''
-            exe_path = Path(buffer.value)
-        finally:
-            kernel32.CloseHandle(handle)
-        parts = exe_path.parts
-        lowered = [part.casefold() for part in parts]
-        library_markers = (('steamapps', 'common'), ('epic games',),
-                           ('gog games',), ('xboxgames',), ('gog galaxy', 'games'))
-        game_name = ''
-        for marker in library_markers:
-            for i in range(len(parts) - len(marker)):
-                if tuple(lowered[i:i+len(marker)]) == marker:
-                    game_name = parts[i + len(marker)]
-                    break
-            if game_name:
-                break
-        bad = {'common', 'games', 'launcher', 'bin', 'binaries', 'shipping',
-               'windows', 'system32', 'steam', 'epic games launcher', 'gog galaxy'}
-        if not game_name or game_name.casefold() in bad:
-            return ''
-        # Strip filename-sensitive characters (Windows folder + UI title).
-        game_name = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', game_name).strip(' .')
-        return game_name[:80] if len(game_name) >= 3 else ''
-    except Exception:
-        logging.debug('Játék automatikus felismerése nem sikerült.', exc_info=True)
-        return ''
+# Játékazonosítás kizárólag helyi Windows- és telepítési adatokból.
+from game_detection import GameRecognizer
 
 
 HISTORY_PATH = ROOT / 'forditasok.json'
@@ -1074,10 +973,14 @@ class Overlay(QWidget):
         self.manual_game_input.setPlaceholderText('Játék címe (ha nem sikerült felismerni)')
         self.manual_game_input.setToolTip('A képi és hangfordítás közös játékbeállítása.')
         settings_layout.addWidget(self.manual_game_input)
+        self.pair_game_requested = None
+        self.pair_game_button = QPushButton('Aktív játék párosítása')
+        self.pair_game_button.setToolTip('A legutóbb aktív játék EXE-fájlját összekapcsolja a megadott névvel.')
+        self.pair_game_button.clicked.connect(self._pair_current_game)
+        settings_layout.addWidget(self.pair_game_button)
         self.game_detection_help = QLabel(
-            'A program először a futó játék telepítési helye alapján keres, '
-            'és az AI is segíthet a fordított tartalom alapján. '
-            'Ha nem sikerül, kézzel is megadhatod. '
+            'A felismerés Windows-folyamat és helyi Steam/Epic/GOG/Xbox adatok alapján történik. '
+            'Ismeretlen játéknál add meg a címet, majd nyomd meg a Párosítás gombot. '
             'Az előzmények a játék nevű mappába kerülnek; ismeretlen játék esetén rendezetlenül maradnak.')
         self.game_detection_help.setObjectName('small')
         self.game_detection_help.setWordWrap(True)
@@ -1447,6 +1350,20 @@ class Overlay(QWidget):
         b.clicked.connect(callback)
         return b
 
+    def _pair_current_game(self):
+        if self.pair_game_requested is None:
+            return
+        title = self.manual_game_input.text().strip()
+        if not title:
+            self.game_detection_status.setText('Előbb add meg a játék nevét.')
+            return
+        if self.pair_game_requested(title):
+            self.refresh_game_status()
+        else:
+            self.game_detection_status.setText(
+                'Nincs nemrég aktív játékablak, vagy a párosítás mentése sikertelen. '
+                'Lépj át a játékba, majd próbáld újra.')
+
     def refresh_game_status(self):
         if self.game_status_provider is None:
             return
@@ -1456,7 +1373,7 @@ class Overlay(QWidget):
             recognized, source = '', ''
         if recognized:
             self.game_detection_status.setText(f'Felismert játék ({source}): {recognized}')
-            self.manual_game_input.setEnabled(False)
+            self.manual_game_input.setEnabled(True)
         else:
             self.game_detection_status.setText('Nem ismertem fel játékot. Megadhatod kézzel.')
             self.manual_game_input.setEnabled(True)
@@ -2511,15 +2428,15 @@ def main():
     overlay = Overlay(cfg, history)
     from live_translation import LiveTranslationSettings
     import time
-    recent_game = {'name': '', 'last_seen': 0.0}
+    recognizer = GameRecognizer(ROOT / 'jatek_parositasok.json')
+    recent_game = {'name': '', 'source': '', 'last_seen': 0.0}
 
     def game_detector():
-        game = detect_foreground_game()
-        if game:
-            recent_game.update(name=game, last_seen=time.monotonic())
-            return game
-        # The application window may have focus when recording starts.
-        # Reuse only a very recent, previously confirmed foreground game.
+        title, source = recognizer.poll()
+        if title:
+            recent_game.update(name=title, source=source, last_seen=time.monotonic())
+            return title
+        # When the assistant overlay takes focus, remember only a recently confirmed game.
         if time.monotonic() - recent_game['last_seen'] <= 15.0:
             return recent_game['name']
         return ''
@@ -2528,29 +2445,23 @@ def main():
     game_poll_timer.setInterval(1400)
     game_poll_timer.timeout.connect(game_detector)
     game_poll_timer.start()
-    inferred_game = {'name': '', 'last_seen': 0.0}
 
     def game_status_provider():
-        detected = game_detector()
-        if detected:
-            return detected, 'Windows'
-        if inferred_game['name'] and time.monotonic() - inferred_game['last_seen'] < 3600:
-            return inferred_game['name'], 'AI'
-        return '', ''
+        title = game_detector()
+        return (title, recent_game['source']) if title else ('', '')
 
     def resolved_game():
         name, _ = game_status_provider()
-        return name or str(cfg.get('manual_game') or '').strip()[:80]
+        return str(cfg.get('manual_game') or '').strip()[:80] or name
 
-    def on_game_inferred(game):
-        # The game is never invented when the model has insufficient evidence.
-        game = re.sub(r'[\\/:*?"<>|\x00-\x1f]', '', str(game or '')).strip(' .')[:80]
-        if len(game) < 3 or game_detector():
-            return
-        inferred_game.update(name=game, last_seen=time.monotonic())
-        overlay.refresh_game_status()
+    def pair_game(title):
+        if recognizer.pair_recent(title):
+            recent_game.update(name=title, source='saját párosítás', last_seen=time.monotonic())
+            return True
+        return False
 
     overlay.game_status_provider = game_status_provider
+    overlay.pair_game_requested = pair_game
     overlay.game_override_changed = overlay.refresh_game_status
     overlay.refresh_game_status()
 
@@ -2570,11 +2481,8 @@ def main():
     live_settings.processing_started.connect(overlay.show_audio_processing)
     live_settings.processing_status.connect(overlay.update_audio_processing)
     live_settings.processing_empty.connect(overlay.show_audio_processing_error)
-    live_settings.game_inferred.connect(on_game_inferred)
     selector = RegionSelector()
     active = {'worker': None, 'suppress_result': False, 'game': '', 'generation': 0}
-    game_recognizers = []
-    last_game_probe = {'at': 0.0}
 
     def send_selection(image):
         if active['worker'] and active['worker'].isRunning():
@@ -2597,31 +2505,6 @@ def main():
                 return  # Egy korábbi kérés késve érkező válasza.
             saved_game = active.get('game', '') or resolved_game()
             history.add(text, saved_game)
-            if (not saved_game and text.strip() and not text.startswith('Fordítási hiba:')
-                    and time.monotonic() - last_game_probe['at'] > 90):
-                last_game_probe['at'] = time.monotonic()
-                detector = ImageGameDetector(buffer.getvalue(), cfg)
-                game_recognizers.append(detector)
-                saved_index = len(history.items) - 1
-                def apply_recognition(game, row=saved_index):
-                    if game_detector() or cfg.get('manual_game'):
-                        return
-                    on_game_inferred(game)
-                    if 0 <= row < len(history.items):
-                        # Assign only the exact saved translation; never reclassify other entries.
-                        record = history.items[row]
-                        if not record.get('folder') and record.get('text') == text:
-                            folder = next((f for f in history.folders if f.casefold() == game.casefold()), None)
-                            if folder is None and history.create_folder(game):
-                                folder = game
-                            if folder:
-                                history.update_item(row, folder=folder)
-                                overlay.sync_folders()
-                                overlay.refresh_history()
-                detector.recognized.connect(apply_recognition)
-                detector.finished.connect(lambda obj=detector: game_recognizers.remove(obj)
-                                          if obj in game_recognizers else None)
-                detector.start()
             if active['suppress_result']:
                 return  # The user closed the overlay while the API request was running.
             if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
