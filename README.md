@@ -154,3 +154,17 @@ A projekt az [MIT-licenc](LICENSE) feltételei szerint használható, módosíth
 
  Fejlesztő: ChatGPT
 Ötletgazda: [Ódor Dániel](https://github.com/odordaniel)
+
+
+## Fejlesztői ellenőrzések
+
+A gyorsbillentyű- és API URL-validáció regressziós tesztjei Windows nélkül is futtathatók:
+
+```powershell
+python -m unittest discover -s tests -v
+python -m py_compile src/assistant.py src/live_translation.py
+```
+
+A GitHub Actions a teszteket a portable EXE készítése előtt futtatja.
+A tesztek a kritikus tiszta logikát fedik le; a tényleges képernyőkijelölést,
+hangrögzítést és Windows felületet továbbra is Windows 11-en kell ellenőrizni.
