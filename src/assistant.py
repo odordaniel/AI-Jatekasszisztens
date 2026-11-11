@@ -2483,6 +2483,23 @@ def main():
         name, _ = game_status_provider()
         return name  # A typed or previously saved field value is not an identified game.
 
+    def screenshot_game(from_tray=False):
+        """Resolve at capture launch, not after selector changes foreground focus.
+
+        A tray command temporarily brings Windows Explorer to the foreground.
+        Only in that explicit case (or when our own UI has focus) may the last
+        recognized, still-running game be reused. Unknown foreground games
+        never inherit another game's folder.
+        """
+        name = resolved_game()
+        if name:
+            return name
+        from game_detection import foreground_is_ours
+        if from_tray or (not recognizer.last_polled_executable and foreground_is_ours()):
+            running_title, _ = recognizer.last_running()
+            return running_title
+        return ''
+
     def pair_game(title):
         if recognizer.pair_recent(title):
             recent_game.update(name=title, source='saját párosítás', last_seen=time.monotonic())
@@ -2549,10 +2566,10 @@ def main():
             if generation == active['generation'] and not active['suppress_result'] else None)
         worker.start()
 
-    def translate():
+    def translate(from_tray=False):
         if active['worker'] and active['worker'].isRunning():
             return
-        active['game'] = resolved_game()
+        active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
         overlay.hide()
         try:
@@ -2561,10 +2578,10 @@ def main():
             overlay.show_message(f'Kijelölési hiba: {exc}')
             logging.exception('Kijelölési hiba')
 
-    def translate_center():
+    def translate_center(from_tray=False):
         if active['worker'] and active['worker'].isRunning():
             return
-        active['game'] = resolved_game()
+        active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
         overlay.hide()
         # Allow the previous overlay to disappear before capturing the desktop.
@@ -2625,8 +2642,8 @@ def main():
     action_startup.setChecked(startup_registered())
     menu.addSeparator()
     action_quit = menu.addAction('Kilépés')
-    action_translate.triggered.connect(translate)
-    action_center.triggered.connect(translate_center)
+    action_translate.triggered.connect(lambda checked=False: translate(from_tray=True))
+    action_center.triggered.connect(lambda checked=False: translate_center(from_tray=True))
     action_history.triggered.connect(overlay.show_history_from_hotkey)
     action_audio.triggered.connect(live_settings.toggle)
     action_audio_settings.triggered.connect(live_settings.open_settings)
