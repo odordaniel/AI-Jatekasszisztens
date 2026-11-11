@@ -968,10 +968,10 @@ class Overlay(QWidget):
         self.game_detection_status.setWordWrap(True)
         self.game_detection_status.setObjectName('small')
         settings_layout.addWidget(self.game_detection_status)
-        self.manual_game_input = QLineEdit(cfg.get('manual_game', ''))
+        self.manual_game_input = QLineEdit()
         self.manual_game_input.setMaxLength(80)
         self.manual_game_input.setPlaceholderText('Játék címe (ha nem sikerült felismerni)')
-        self.manual_game_input.setToolTip('A képi és hangfordítás közös játékbeállítása.')
+        self.manual_game_input.setToolTip('Felismert játék neve; ismeretlen játéknál itt adható meg a párosításhoz a cím.')
         settings_layout.addWidget(self.manual_game_input)
         self.pair_game_requested = None
         self.pair_game_button = QPushButton('Aktív játék párosítása')
@@ -1373,10 +1373,13 @@ class Overlay(QWidget):
             recognized, source = '', ''
         if recognized:
             self.game_detection_status.setText(f'Felismert játék ({source}): {recognized}')
-            self.manual_game_input.setEnabled(True)
         else:
-            self.game_detection_status.setText('Nem ismertem fel játékot. Megadhatod kézzel.')
-            self.manual_game_input.setEnabled(True)
+            self.game_detection_status.setText('Nem ismertem fel játékot. A fordítás a rendezetlen előzményekbe kerül.')
+        # Keep a title that the user is actively editing for the EXE pairing action.
+        # Otherwise the field always mirrors detection; never a stale config override.
+        if not self.manual_game_input.hasFocus() and self.manual_game_input.text() != recognized:
+            self.manual_game_input.setText(recognized)
+        self.manual_game_input.setEnabled(True)
 
     def toggle_settings(self):
         if self._audio_result_open:
@@ -1397,7 +1400,7 @@ class Overlay(QWidget):
         self.fps_height_input.setValue(int(self.cfg.get('fps_height_percent', 40)))
         self.settings_status.clear()
         self.api_test_status.hide()
-        self.manual_game_input.setText(self.cfg.get('manual_game', ''))
+        self.manual_game_input.clear()
         self.refresh_game_status()
         self._history_before_settings = not self.history_panel.isHidden()
         if self._history_before_settings:
@@ -1532,7 +1535,7 @@ class Overlay(QWidget):
                        model=model, fallback_model=fallback, hotkeys=shortcuts,
                        fps_width_percent=self.fps_width_input.value(),
                        fps_height_percent=self.fps_height_input.value(),
-                       manual_game=self.manual_game_input.text().strip()[:80])
+                       manual_game='')  # Legacy override must not affect game detection.
         try:
             # Persist to the vault FIRST; leave existing configuration untouched on error.
             save_api_key(updated['api_key'])
@@ -2436,9 +2439,15 @@ def main():
         if title:
             recent_game.update(name=title, source=source, last_seen=time.monotonic())
             return title
-        # When the assistant overlay takes focus, remember only a recently confirmed game.
-        if time.monotonic() - recent_game['last_seen'] <= 15.0:
+        if recognizer.last_polled_executable:
+            # A different, unrecognized foreground process invalidates the old game.
+            recent_game.update(name='', source='', last_seen=0.0)
+            return ''
+        # Foreground reads return no EXE while our own overlay has focus.
+        # Only a briefly recent, actually recognized game may be reused.
+        if recent_game['name'] and time.monotonic() - recent_game['last_seen'] <= 15.0:
             return recent_game['name']
+        recent_game.update(name='', source='', last_seen=0.0)
         return ''
 
     game_poll_timer = QTimer(overlay)
@@ -2452,7 +2461,7 @@ def main():
 
     def resolved_game():
         name, _ = game_status_provider()
-        return str(cfg.get('manual_game') or '').strip()[:80] or name
+        return name  # A typed or previously saved field value is not an identified game.
 
     def pair_game(title):
         if recognizer.pair_recent(title):
@@ -2503,7 +2512,7 @@ def main():
         def handle_result(text):
             if generation != active['generation']:
                 return  # Egy korábbi kérés késve érkező válasza.
-            saved_game = active.get('game', '') or resolved_game()
+            saved_game = active.get('game', '')  # Preserve detection at capture time.
             history.add(text, saved_game)
             if active['suppress_result']:
                 return  # The user closed the overlay while the API request was running.

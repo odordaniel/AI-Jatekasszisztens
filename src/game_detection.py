@@ -133,6 +133,7 @@ class GameRecognizer:
         self._mappings = {}
         self._cache = {}
         self._last_executable = ''
+        self.last_polled_executable = ''
         self._last_seen = 0.0
         self._load()
 
@@ -185,6 +186,7 @@ class GameRecognizer:
 
     def poll(self):
         exe = foreground_executable()
+        self.last_polled_executable = exe
         if exe:
             name, source = self.recognize(exe)
             if name:
