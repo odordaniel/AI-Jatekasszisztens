@@ -158,6 +158,7 @@ class LiveWorker(QThread):
         self.started = datetime.now().isoformat(timespec='seconds')
         self._previous = []
         self._fatal_error = ''
+        self._segment_errors = []
         self._sequence = 0
 
     def _checkpoint(self):
@@ -353,8 +354,12 @@ class LiveWorker(QThread):
                 wav.setsampwidth(2)
                 wav.setframerate(16000)
                 wav.writeframes(np.clip(samples * 32767, -32768, 32767).astype('<i2').tobytes())
+            if self.cancel.is_set():
+                return []
             self.status.emit(f'{index}. hangszakasz feltöltése · beszélők felismerése…')
             remote = client.files.upload(file=wav_path)
+            if self.cancel.is_set():
+                return []
             interaction = client.interactions.create(
                 model=self.model,
                 input=[{'type': 'audio', 'uri': remote.uri,
@@ -362,7 +367,7 @@ class LiveWorker(QThread):
                 generation_config={'transcription_config': {
                     'mode': {'type': 'verbatim', 'diarization_mode': 'speaker', 'timestamp_granularities': ['word']}}},
             )
-            return self._speaker_turns(interaction)
+            return [] if self.cancel.is_set() else self._speaker_turns(interaction)
         finally:
             if remote is not None and getattr(remote, 'name', None):
                 try:
@@ -376,7 +381,16 @@ class LiveWorker(QThread):
 
     def run(self):
         """Record first; after explicit stop, transcribe and translate the recording."""
-        import numpy as np
+        try:
+            import numpy as np
+            import soundcard as sc  # Windows COM: import in the recording thread.
+        except ImportError as exc:
+            self._fatal_error = ('Hiányzó hangfeldolgozó függőség: ' +
+                                 str(getattr(exc, 'name', '') or 'numpy / soundcard') +
+                                 '. Telepítsd a requirements.txt csomagjait.')
+            self.failed.emit(self._fatal_error)
+            self.completed.emit([], self.started)
+            return
         sample_rate = 16000
         block_frames = 1600
         # Diarization requests support up to 30 minutes. Use 20-minute clips to
@@ -386,7 +400,6 @@ class LiveWorker(QThread):
         client = None
         try:
             self.status.emit('Rögzítés folyamatban – leállításig csak hallgatok…')
-            import soundcard as sc  # COM initialized outside the Qt GUI thread
             speaker = next((item for item in sc.all_speakers() if item.id == self.device_id), None)
             if speaker is None:
                 raise RuntimeError('A kiválasztott hangkimenet nem található.')
@@ -436,12 +449,16 @@ class LiveWorker(QThread):
                         remote = None
                         try:
                             remote=client.files.upload(file=str(path))
+                            if self.cancel.is_set():
+                                break
                             interaction=client.interactions.create(
                                 model=self.model,
                                 input=[{'type':'audio','uri':remote.uri,
                                         'mime_type':remote.mime_type or 'audio/wav'}],
                                 generation_config={'transcription_config':{'mode':{
                                     'type':'verbatim','diarization_mode':'speaker', 'timestamp_granularities':['word']}}})
+                            if self.cancel.is_set():
+                                break
                             turns=self._speaker_turns(interaction)
                             for spk,source,offset in turns:
                                 # Speaker labels are clip-local; time offsets are clip-relative.
@@ -455,7 +472,12 @@ class LiveWorker(QThread):
                                 except Exception:
                                     logging.warning('A Gemini ideiglenes fájl törlése nem sikerült.')
                     except Exception as exc:
-                        self.failed.emit(f'{i}. hangrész átírása sikertelen: {type(exc).__name__}: {exc}')
+                        message = f'{i}. hangrész átírása sikertelen: {type(exc).__name__}: {exc}'
+                        self._segment_errors.append(message)
+                        self.failed.emit(message)
+                if self.cancel.is_set():
+                    self.status.emit('Hangfeldolgozás megszakítva; a kész részek megőrizve.')
+                    return
                 if not all_turns:
                     self.status.emit('Nem találtam felismerhető beszédet a felvételen.')
                     return
@@ -479,10 +501,17 @@ class LiveWorker(QThread):
                         self._previous=(self._previous+[source])[-3:]
                         self._save_entry(source,translated,used,speaker=name,elapsed=elapsed)
                     except Exception as exc:
-                        self.failed.emit(f'Fordítási hiba ({i}/{count}): {exc}')
+                        message = f'Fordítási hiba ({i}/{count}): {exc}'
+                        self._segment_errors.append(message)
+                        self.failed.emit(message)
                         self._save_entry(source,'',self.translate_model,
                                          error=str(exc),speaker=name,elapsed=elapsed)
-                self.status.emit('A szövegkönyv elkészült.')
+                if self.cancel.is_set():
+                    self.status.emit('Hangfeldolgozás megszakítva; a kész részek megőrizve.')
+                elif self._segment_errors:
+                    self.status.emit(f'A szövegkönyv részben elkészült ({len(self._segment_errors)} feldolgozási hiba).')
+                else:
+                    self.status.emit('A szövegkönyv elkészült.')
         except Exception as exc:
             self._fatal_error=f'{type(exc).__name__}: {exc}'
             logging.exception('Hangfordítási munkamenet hiba')
@@ -498,6 +527,7 @@ class LiveWorker(QThread):
                 self._checkpoint()
             except Exception:
                 logging.exception('Szövegkönyv helyreállítási mentési hiba')
+            # Even on cancellation, already translated segments remain recoverable.
             self.completed.emit(self.entries,self.started)
 
     def stop(self):
@@ -1138,6 +1168,8 @@ class LiveTranslationSettings(QWidget):
                        'vagy a feldolgozás hibával leállt.')
             if self.worker and self.worker._fatal_error:
                 message += '\n\nHiba: ' + self.worker._fatal_error
+            elif self.worker and self.worker._segment_errors:
+                message += '\n\n' + self.worker._segment_errors[0]
             self.status.setText(message)
             self.processing_empty.emit(message)
             return
@@ -1157,7 +1189,10 @@ class LiveTranslationSettings(QWidget):
             body = 'Hangfordítás – ' + started + '\n\n' + '\n\n'.join(chunks)
             saved = self.on_history(body, (self.worker.inferred_game if self.worker else ''))
             if saved:
-                if not (self.worker and self.worker._fatal_error):
+                if self.worker and self.worker._segment_errors:
+                    self.status.setText(
+                        f'{len(entries)} részlet mentve, {len(self.worker._segment_errors)} feldolgozási hibával.')
+                elif not (self.worker and self.worker._fatal_error):
                     self.status.setText(f'{len(entries)} részlet mentve a közös előzményekbe.')
                 try:
                     self.recovery_path.unlink(missing_ok=True)
