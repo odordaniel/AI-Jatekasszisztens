@@ -29,6 +29,8 @@ APP_DIR = Path(os.environ.get('LOCALAPPDATA') or (Path.home() / 'AppData' / 'Loc
 APP_DIR.mkdir(parents=True, exist_ok=True)
 ROOT = APP_DIR
 CONFIG_PATH = ROOT / 'config.json'
+# Serializes in-process reads/writes; QLockFile separately prevents a second app instance.
+_STORAGE_LOCK = threading.RLock()
 APP_VERSION = '1.9.3'  # Update when publishing the next release
 
 # Első indításkor áthozzuk a meglévő parancssoros kiadás beállításait és előzményeit.
@@ -96,9 +98,10 @@ def read_api_key():
 def write_config(config):
     # Never serialize the in-memory secret in plaintext.
     sanitized = {k: v for k, v in config.items() if k not in ('api_key', 'api_key_dpapi')}
-    temp = CONFIG_PATH.with_suffix('.json.tmp')
-    temp.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2), encoding='utf-8')
-    temp.replace(CONFIG_PATH)
+    with _STORAGE_LOCK:
+        temp = CONFIG_PATH.with_suffix('.json.tmp')
+        temp.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2), encoding='utf-8')
+        temp.replace(CONFIG_PATH)
 
 
 def icon_path():
@@ -116,26 +119,32 @@ DEFAULTS = {
 
 
 def load_config():
-    if not CONFIG_PATH.exists():
-        write_config(DEFAULTS)
-    raw = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
-    if not isinstance(raw, dict):
-        raise ValueError('A config.json érvénytelen.')
-    data = DEFAULTS.copy()
-    data.update(raw)
-    legacy_key = str(raw.get('api_key') or '')
-    if legacy_key:
-        # Migration only removes the plaintext after Credential Manager successfully stores it.
-        save_api_key(legacy_key)
-        write_config(data)
-        logging.warning('Legacy API key migrated from config.json into Windows Credential Manager.')
-    try:
-        data['hotkeys'] = normalize_hotkeys(data.get('hotkeys'))
-    except ValueError as exc:
-        logging.warning('Invalid saved hotkeys, restoring defaults: %s', exc)
-        data['hotkeys'] = dict(HOTKEY_DEFAULTS)
-    data['api_key'] = read_api_key()
-    return data
+    with _STORAGE_LOCK:
+        if not CONFIG_PATH.exists():
+            write_config(DEFAULTS)
+        try:
+            raw = json.loads(CONFIG_PATH.read_text(encoding='utf-8'))
+            if not isinstance(raw, dict):
+                raise ValueError('A config.json gyökéreleme nem objektum.')
+        except (OSError, UnicodeError, ValueError, TypeError) as exc:
+            # Preserve the damaged file for manual inspection; do not overwrite it.
+            logging.warning('Beállítások betöltése sikertelen (%s); alapértékek használata.', type(exc).__name__)
+            raw = {}
+        data = DEFAULTS.copy()
+        data.update(raw)
+        legacy_key = str(raw.get('api_key') or '')
+        if legacy_key:
+            # Migration only removes the plaintext after Credential Manager successfully stores it.
+            save_api_key(legacy_key)
+            write_config(data)
+            logging.warning('Legacy API key migrated from config.json into Windows Credential Manager.')
+        try:
+            data['hotkeys'] = normalize_hotkeys(data.get('hotkeys'))
+        except (ValueError, TypeError, AttributeError) as exc:
+            logging.warning('Invalid saved hotkeys, restoring defaults: %s', type(exc).__name__)
+            data['hotkeys'] = dict(HOTKEY_DEFAULTS)
+        data['api_key'] = read_api_key()
+        return data
 
 
 
@@ -640,6 +649,10 @@ class HistoryStore:
     def __init__(self):
         self.items = []
         self.folders = []
+        with _STORAGE_LOCK:
+            self._load_saved_data()
+
+    def _load_saved_data(self):
         if FOLDERS_PATH.exists():
             try:
                 loaded_folders = json.loads(FOLDERS_PATH.read_text(encoding='utf-8'))
@@ -657,14 +670,15 @@ class HistoryStore:
                 logging.warning('Előzmények betöltési hiba: %s', type(exc).__name__)
 
     def save_folders(self):
-        try:
-            tmp = FOLDERS_PATH.with_suffix('.json.tmp')
-            tmp.write_text(json.dumps(self.folders, ensure_ascii=False, indent=2), encoding='utf-8')
-            tmp.replace(FOLDERS_PATH)
-            return True
-        except OSError as exc:
-            logging.warning('Mappák mentési hiba: %s', type(exc).__name__)
-            return False
+        with _STORAGE_LOCK:
+            try:
+                tmp = FOLDERS_PATH.with_suffix('.json.tmp')
+                tmp.write_text(json.dumps(self.folders, ensure_ascii=False, indent=2), encoding='utf-8')
+                tmp.replace(FOLDERS_PATH)
+                return True
+            except (OSError, TypeError, ValueError) as exc:
+                logging.warning('Mappák mentési hiba: %s', type(exc).__name__)
+                return False
 
     def create_folder(self, name):
         name = name.strip()
@@ -739,14 +753,15 @@ class HistoryStore:
         return True
 
     def save(self):
-        try:
-            tmp = HISTORY_PATH.with_suffix('.json.tmp')
-            tmp.write_text(json.dumps(self.items, ensure_ascii=False, indent=2), encoding='utf-8')
-            tmp.replace(HISTORY_PATH)
-            return True
-        except OSError as exc:
-            logging.warning('Előzmények mentési hiba: %s', type(exc).__name__)
-            return False
+        with _STORAGE_LOCK:
+            try:
+                tmp = HISTORY_PATH.with_suffix('.json.tmp')
+                tmp.write_text(json.dumps(self.items, ensure_ascii=False, indent=2), encoding='utf-8')
+                tmp.replace(HISTORY_PATH)
+                return True
+            except (OSError, TypeError, ValueError) as exc:
+                logging.warning('Előzmények mentési hiba: %s', type(exc).__name__)
+                return False
 
     def delete(self, index):
         if not 0 <= index < len(self.items):
