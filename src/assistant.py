@@ -2363,15 +2363,16 @@ def main():
     live_settings.processing_empty.connect(overlay.show_audio_processing_error)
     live_settings.game_inferred.connect(on_game_inferred)
     selector = RegionSelector()
-    active = {'worker': None, 'suppress_result': False, 'game': ''}
+    active = {'worker': None, 'suppress_result': False, 'game': '', 'generation': 0}
     game_recognizers = []
     last_game_probe = {'at': 0.0}
 
     def send_selection(image):
-        overlay.prepare_translation()
         if active['worker'] and active['worker'].isRunning():
-            overlay.show_message('A fordítás még folyamatban van…')
-            return
+            return  # A futó fordítás ablakát ne írja felül új kérés.
+        overlay.prepare_translation()
+        active['generation'] += 1
+        generation = active['generation']
         max_width = max(320, int(cfg['max_image_width']))
         if image.width > max_width:
             image.thumbnail((max_width, max_width * image.height // image.width))
@@ -2383,6 +2384,8 @@ def main():
         active['worker'] = worker
 
         def handle_result(text):
+            if generation != active['generation']:
+                return  # Egy korábbi kérés késve érkező válasza.
             saved_game = active.get('game', '') or resolved_game()
             history.add(text, saved_game)
             if (not saved_game and text.strip() and not text.startswith('Fordítási hiba:')
@@ -2418,15 +2421,16 @@ def main():
                 overlay.show_message(text)
 
         worker.finished_text.connect(handle_result)
-        worker.model_started.connect(overlay.show_active_model)
+        worker.model_started.connect(
+            lambda model, fallback: overlay.show_active_model(model, fallback)
+            if generation == active['generation'] and not active['suppress_result'] else None)
         worker.start()
 
     def translate():
+        if active['worker'] and active['worker'].isRunning():
+            return
         active['game'] = resolved_game()
         overlay.prepare_translation()
-        if active['worker'] and active['worker'].isRunning():
-            overlay.show_message('A fordítás még folyamatban van…')
-            return
         overlay.hide()
         try:
             selector.begin()
@@ -2435,11 +2439,10 @@ def main():
             logging.exception('Kijelölési hiba')
 
     def translate_center():
+        if active['worker'] and active['worker'].isRunning():
+            return
         active['game'] = resolved_game()
         overlay.prepare_translation()
-        if active['worker'] and active['worker'].isRunning():
-            overlay.show_message('A fordítás még folyamatban van…')
-            return
         overlay.hide()
         # Allow the previous overlay to disappear before capturing the desktop.
         def capture_center():
