@@ -640,10 +640,12 @@ class HistoryStore:
             # "Játék mappája" = a beépített előzménykezelő játéknevű mappája,
             # NOT the game's installation directory.
             matched = next((folder for folder in self.folders if folder.casefold() == game.casefold()), None)
-            if matched is None and self.create_folder(game):
+            if matched is None:
+                if not self.create_folder(game):
+                    # Never silently file a recognized game under Unsorted.
+                    return False
                 matched = game
-            if matched:
-                record['folder'] = matched
+            record['folder'] = matched
         self.items.append(record)
         if not self.save():
             self.items.pop()
@@ -2439,13 +2441,31 @@ def main():
         if title:
             recent_game.update(name=title, source=source, last_seen=time.monotonic())
             return title
+        if not recognizer.last_polled_executable:
+            # Region selector/settings can hide the game window for an arbitrary
+            # amount of time. Reuse the last *identified and still running*
+            # game only while our own UI is the foreground window.
+            from game_detection import foreground_is_ours
+            last_running = getattr(recognizer, 'last_running', None)
+            if callable(last_running):
+                if foreground_is_ours():
+                    running_title, running_source = last_running()
+                    if running_title:
+                        recent_game.update(name=running_title, source=running_source,
+                                           last_seen=time.monotonic())
+                        return running_title
+                # A previously recognized process must not be reused when it
+                # exited, or when some other foreground app obscures its name.
+                recent_game.update(name='', source='', last_seen=0.0)
+                return ''
         if recognizer.last_polled_executable:
             # A different, unrecognized foreground process invalidates the old game.
             recent_game.update(name='', source='', last_seen=0.0)
             return ''
         # Foreground reads return no EXE while our own overlay has focus.
         # Only a briefly recent, actually recognized game may be reused.
-        if recent_game['name'] and time.monotonic() - recent_game['last_seen'] <= 15.0:
+        if (recent_game['name'] and time.monotonic() - recent_game['last_seen'] <= 15.0
+                and not recognizer.last_polled_executable):
             return recent_game['name']
         recent_game.update(name='', source='', last_seen=0.0)
         return ''
@@ -2513,7 +2533,9 @@ def main():
             if generation != active['generation']:
                 return  # Egy korábbi kérés késve érkező válasza.
             saved_game = active.get('game', '')  # Preserve detection at capture time.
-            history.add(text, saved_game)
+            saved = history.add(text, saved_game)
+            if saved:
+                overlay.sync_folders()
             if active['suppress_result']:
                 return  # The user closed the overlay while the API request was running.
             if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):

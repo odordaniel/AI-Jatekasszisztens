@@ -20,10 +20,10 @@ def clean_title(value):
     return value if len(value) >= 3 and value.casefold() not in _IGNORE else ''
 
 
-def foreground_executable():
-    """Read foreground window process image without requiring admin rights."""
+def foreground_process():
+    """Read foreground window process image and PID without requiring admin rights."""
     if os.name != 'nt':
-        return ''
+        return '', 0
     try:
         user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
         user32.GetForegroundWindow.restype = wintypes.HWND
@@ -38,24 +38,69 @@ def foreground_executable():
         kernel32.CloseHandle.restype = wintypes.BOOL
         hwnd = user32.GetForegroundWindow()
         if not hwnd:
-            return ''
+            return '', 0
         pid = wintypes.DWORD()
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
         if not pid.value or pid.value == os.getpid():
-            return ''
+            return '', 0
         handle = kernel32.OpenProcess(0x1000, False, pid.value)
         if not handle:
-            return ''
+            return '', 0
         try:
             length = wintypes.DWORD(32768)
             buf = ctypes.create_unicode_buffer(length.value)
-            return buf.value if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(length)) else ''
+            return (buf.value, pid.value) if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(length)) else ('', 0)
         finally:
             kernel32.CloseHandle(handle)
     except (OSError, ValueError, AttributeError):
         logging.debug('Cannot read foreground executable', exc_info=True)
-        return ''
+        return '', 0
 
+
+
+def foreground_executable():
+    """Compatibility wrapper for callers needing only the executable path."""
+    return foreground_process()[0]
+
+
+def foreground_is_ours():
+    """True only when our own UI holds foreground focus."""
+    if os.name != 'nt':
+        return False
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return False
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return pid.value == os.getpid()
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def process_is_running(pid):
+    """Check whether the recognized game process is still alive."""
+    if os.name != 'nt' or not pid:
+        return False
+    try:
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        # SYNCHRONIZE is sufficient for checking process termination.
+        handle = kernel32.OpenProcess(0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == 0x00000102  # WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
+    except (OSError, AttributeError, ValueError):
+        return False
 
 def steam_manifest_title(manifest, folder):
     """Match Steam install directory against appmanifest_<appid>.acf metadata."""
@@ -134,6 +179,8 @@ class GameRecognizer:
         self._cache = {}
         self._last_executable = ''
         self.last_polled_executable = ''
+        self._last_game_executable = ''
+        self._last_game_pid = 0
         self._last_seen = 0.0
         self._load()
 
@@ -185,11 +232,13 @@ class GameRecognizer:
             return result
 
     def poll(self):
-        exe = foreground_executable()
+        exe, pid = foreground_process()
         self.last_polled_executable = exe
         if exe:
             name, source = self.recognize(exe)
             if name:
+                self._last_game_executable = exe
+                self._last_game_pid = pid
                 self._last_executable = exe
                 self._last_seen = time.monotonic()
                 return name, source
@@ -197,6 +246,16 @@ class GameRecognizer:
             self._last_executable = exe
             self._last_seen = time.monotonic()
         return '', ''
+
+    def last_running(self):
+        """Keep an identified game while our own dialog overlays its window.
+
+        Do not reuse it after the original process exits or another process
+        becomes foreground; the caller enforces the foreground constraint.
+        """
+        if not process_is_running(self._last_game_pid):
+            return '', ''
+        return self.recognize(self._last_game_executable)
 
     def recent(self, seconds=15):
         if self._last_executable and time.monotonic() - self._last_seen < seconds:
