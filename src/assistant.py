@@ -547,28 +547,51 @@ class HistoryStore:
     def __init__(self):
         self.items = []
         self.folders = []
+        self._history_writable = True
+        self._folders_writable = True
         with _STORAGE_LOCK:
             self._load_saved_data()
+
+    @staticmethod
+    def _preserve_unreadable_file(path):
+        """Allow replacement only after preserving the original bytes."""
+        try:
+            original = path.read_bytes()
+            backup = path.with_name(path.name + '.corrupt-' + datetime.now().strftime('%Y%m%d-%H%M%S-%f'))
+            with backup.open('xb') as stream:
+                stream.write(original)
+            return True
+        except OSError as exc:
+            logging.warning('Sérült adatfájl biztonsági mentése sikertelen: %s', type(exc).__name__)
+            return False
 
     def _load_saved_data(self):
         if FOLDERS_PATH.exists():
             try:
                 loaded_folders = json.loads(FOLDERS_PATH.read_text(encoding='utf-8'))
+                if not isinstance(loaded_folders, list):
+                    raise ValueError('A mappafájl gyökéreleme nem lista.')
                 if isinstance(loaded_folders, list):
                     self.folders = [x for x in loaded_folders if isinstance(x, str) and x.strip()]
                     self.folders = list(dict.fromkeys(self.folders))
             except (OSError, ValueError) as exc:
                 logging.warning('Mappák betöltési hiba: %s', type(exc).__name__)
+                self._folders_writable = self._preserve_unreadable_file(FOLDERS_PATH)
         if HISTORY_PATH.exists():
             try:
                 loaded = json.loads(HISTORY_PATH.read_text(encoding='utf-8'))
+                if not isinstance(loaded, list):
+                    raise ValueError('Az előzményfájl gyökéreleme nem lista.')
                 if isinstance(loaded, list):
                     self.items = [x for x in loaded if isinstance(x, dict) and isinstance(x.get('text'), str)]
             except (OSError, ValueError) as exc:
                 logging.warning('Előzmények betöltési hiba: %s', type(exc).__name__)
+                self._history_writable = self._preserve_unreadable_file(HISTORY_PATH)
 
     def save_folders(self):
         with _STORAGE_LOCK:
+            if not self._folders_writable:
+                return False
             try:
                 tmp = FOLDERS_PATH.with_suffix('.json.tmp')
                 tmp.write_text(json.dumps(self.folders, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -654,6 +677,8 @@ class HistoryStore:
 
     def save(self):
         with _STORAGE_LOCK:
+            if not self._history_writable:
+                return False
             try:
                 tmp = HISTORY_PATH.with_suffix('.json.tmp')
                 tmp.write_text(json.dumps(self.items, ensure_ascii=False, indent=2), encoding='utf-8')
@@ -2765,3 +2790,4 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
