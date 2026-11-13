@@ -161,6 +161,8 @@ A hibajelentések, fejlesztési ötletek és javítási javaslatok szívesen fog
 - [Hibajelentés és funkciójavaslat](https://github.com/odordaniel/AI-Jatekasszisztens/issues)
 - [Pull Requestek](https://github.com/odordaniel/AI-Jatekasszisztens/pulls)
 - [Közreműködési útmutató](CONTRIBUTING.md)
+- [Magatartási kódex](CODE_OF_CONDUCT.md)
+- [Akadálymentességi nyilatkozat és visszajelzés](ACCESSIBILITY.md)
 
 ## Licenc
 
