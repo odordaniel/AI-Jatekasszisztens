@@ -88,7 +88,11 @@ A gyorsbillentyűk a beállításokban módosíthatók.
 
 A korábban elkészült kép- és hangfordítások az előzmények között visszakereshetők. A listában `Ctrl`/`Shift` segítségével több elemet jelölhetsz ki; jobb kattintással vagy a `Ctrl+C`, `Ctrl+V`, `F2`, `Delete` billentyűkkel másolhatsz, beilleszthetsz, átnevezhetsz és törölhetsz. Új mappát is létrehozhatsz, elemeket áthelyezhetsz. Ezek a műveletek az alkalmazás mentett fordításaira vonatkoznak, nem a Windows fájlrendszerére.
 
-### 4. Játékfelismerés és mentés
+### 4. Beállítások
+
+A beállítások tetején a **Képernyő és alkalmazás** és a **Hangfordítás** között válthatsz, az ablak méretének és helyének megváltozása nélkül. A képernyőbeállításokat a Kapcsolat, Játékfelismerés és Gyorsbillentyűk lapok rendezik; a hangbeállításoknál külön Hangforrás, Beszédfelismerés és Fordítás lap található. A hosszabb lapok görgethetők, a Mentés gomb végig elérhető marad.
+
+### 5. Játékfelismerés és mentés
 
 A program az előtérben futó játék folyamatából, a telepített játékok helyi adataiból vagy manuálisan mentett EXE-párosításból azonosíthatja a játékot. A játék neve automatikusan frissülhet a beállításokban, és a fordítások a hozzá tartozó mappába kerülnek. Ha a korábbi mappát törölted, egy új, megfelelően azonosított fordítás mentésekor ismét létrejöhet. Ismeretlen játék esetén a mentés a rendezetlen előzmények közé kerül. A játék felismerése nem használ képelemző AI-t vagy a párbeszédek szövegét.
 
@@ -177,3 +181,4 @@ python -m py_compile src/assistant.py src/live_translation.py
 A GitHub Actions a teszteket a portable EXE készítése előtt futtatja.
 A tesztek a kritikus tiszta logikát fedik le; a tényleges képernyőkijelölést,
 hangrögzítést és Windows felületet továbbra is Windows 11-en kell ellenőrizni.
+

@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import requests
+from settings_ui import SETTINGS_STYLE, text_label, settings_tabs, tab_page, card, field
 from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer, QRect, QPoint, QSize, QEvent, QLockFile
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut, QIcon, QCursor
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QFrame, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QTextEdit, QSizeGrip, QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QCheckBox, QTextBrowser, QSystemTrayIcon, QMenu, QMessageBox, QSpinBox, QScrollArea
@@ -806,6 +807,8 @@ class Overlay(QWidget):
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
     """
 
+    STYLE += SETTINGS_STYLE
+
     def __init__(self, cfg, history):
         super().__init__()
         self.cfg = cfg
@@ -825,7 +828,7 @@ class Overlay(QWidget):
         self._compact_size = QSize(660, 370)
         self._history_size = QSize(660, 680)
         self._settings_size = QSize(660, 680)
-        self._audio_size = QSize(750, 790)
+        self._audio_size = QSize(self._settings_size)
         self._transcript_size = QSize(700, 760)
         self._transcript_return_mode = 'history'
         self._audio_result_open = False
@@ -900,178 +903,128 @@ class Overlay(QWidget):
         self.label.setMinimumHeight(75)
         content.addWidget(self.label, 1)
 
-        # Settings live within the same draggable window; no modal dialogs.
-        self.settings_panel = QScrollArea()
-        self.settings_panel.setWidgetResizable(True)
-        self.settings_panel.setFrameShape(QFrame.Shape.NoFrame)
-        self.settings_panel.setStyleSheet('QScrollArea {background: transparent; border: 0;}')
-        self.settings_content = QFrame()
-        self.settings_content.setObjectName('settingsPanel')
-        self.settings_panel.setWidget(self.settings_content)
-        settings_layout = QVBoxLayout(self.settings_content)
-        settings_layout.setContentsMargins(19, 18, 19, 17)
+        # Both settings views share navigation, spacing and the current geometry.
+        self.settings_navigation = QFrame()
+        navigation = QHBoxLayout(self.settings_navigation)
+        navigation.setContentsMargins(0, 0, 0, 0)
+        navigation.setSpacing(8)
+        self.general_settings_button = self.btn('Képernyő és alkalmazás', self.show_general_settings, role='settingsNav')
+        self.audio_settings_button = self.btn('Hangfordítás', self.audio_settings_requested.emit, role='settingsNav')
+        for button in (self.general_settings_button, self.audio_settings_button):
+            button.setCheckable(True)
+            navigation.addWidget(button, 1)
+        content.insertWidget(1, self.settings_navigation)
+        self.settings_navigation.hide()
+
+        self.settings_panel = QFrame()
+        self.settings_panel.setObjectName('settingsPanel')
+        settings_layout = QVBoxLayout(self.settings_panel)
+        settings_layout.setContentsMargins(0, 0, 0, 0)
         settings_layout.setSpacing(10)
-        settings_heading = QLabel('Kapcsolat és modellek')
-        settings_heading.setObjectName('brand')
-        settings_header = QHBoxLayout()
-        settings_header.addWidget(settings_heading)
-        settings_header.addStretch()
-        self.version_label = QLabel(f'v{APP_VERSION}')
-        self.version_label.setObjectName('small')
-        self.version_label.setToolTip('Alkalmazásverzió')
-        settings_header.addWidget(self.version_label)
-        settings_layout.addLayout(settings_header)
-        settings_description = QLabel('OpenAI-kompatibilis API, például Open WebUI. A módosítások mentés után az új fordításoknál lépnek életbe.')
-        settings_description.setObjectName('small')
-        settings_description.setWordWrap(True)
-        settings_layout.addWidget(settings_description)
+        heading = QHBoxLayout()
+        heading.addWidget(text_label('Képernyő és alkalmazás', 'settingsTitle'), 1)
+        self.version_label = text_label(f'v{APP_VERSION}')
+        heading.addWidget(self.version_label)
+        settings_layout.addLayout(heading)
+        settings_layout.addWidget(text_label('Állítsd be a fordítást, a játékfelismerést és a vezérlést.'))
+        self.settings_tabs = settings_tabs(settings_layout)
+        connection = tab_page(self.settings_tabs, 'Kapcsolat')
+        games = tab_page(self.settings_tabs, 'Játékfelismerés')
+        shortcuts = tab_page(self.settings_tabs, 'Gyorsbillentyűk')
 
-        def settings_field(caption, placeholder, value='', secret=False):
-            field_label = QLabel(caption)
-            field_label.setObjectName('section')
-            settings_layout.addWidget(field_label)
-            entry = QLineEdit()
-            entry.setPlaceholderText(placeholder)
-            entry.setText(value or '')
-            entry.setClearButtonEnabled(not secret)
-            if secret:
-                entry.setEchoMode(QLineEdit.EchoMode.Password)
-            settings_layout.addWidget(entry)
-            return entry
-
-        self.api_url_input = settings_field('API VÉGPONT', 'https://szerverem/api/chat/completions', cfg.get('api_url'))
-        self.api_key_input = settings_field('API-KULCS', 'Opcionális, ha nincs szükség hitelesítésre', cfg.get('api_key'), True)
-        reveal_row = QHBoxLayout()
+        api = card(connection, 'API-kapcsolat', 'OpenAI-kompatibilis szolgáltatás a képernyőképek fordításához.')
+        self.api_url_input = QLineEdit(cfg.get('api_url', ''))
+        self.api_url_input.setPlaceholderText('https://szerverem/api/chat/completions')
+        self.api_url_input.setClearButtonEnabled(True)
+        field(api, 'API végpont', self.api_url_input)
+        self.api_key_input = QLineEdit(cfg.get('api_key', ''))
+        self.api_key_input.setPlaceholderText('Ha a szolgáltatás hitelesítést kér')
+        self.api_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        field(api, 'API-kulcs', self.api_key_input)
         self.reveal_key = QCheckBox('API-kulcs megjelenítése')
         self.reveal_key.toggled.connect(lambda checked: self.api_key_input.setEchoMode(
             QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password))
-        reveal_row.addWidget(self.reveal_key)
-        reveal_row.addStretch()
-        settings_layout.addLayout(reveal_row)
+        api.addWidget(self.reveal_key)
+        api.addWidget(text_label('A kulcsot a Windows Hitelesítőadat-kezelő tárolja. Kép csak fordításkéréskor kerül elküldésre.'))
+
+        models = card(connection, 'Fordítómodellek', 'Válassz képfeldolgozást támogató modellt.')
         def model_picker(caption, initial, optional=False):
-            heading = QLabel(caption)
-            heading.setObjectName('section')
-            settings_layout.addWidget(heading)
             picker = QComboBox()
             picker.setEditable(True)
             picker.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-            picker.setMinimumWidth(260)
             picker.setMaxVisibleItems(15)
-            picker.lineEdit().setPlaceholderText('Válassz a listából, vagy írd be az azonosítót')
+            picker.lineEdit().setPlaceholderText('Modell kiválasztása vagy azonosító megadása')
             if optional:
                 picker.addItem('')
             picker.setEditText(initial or '')
-            settings_layout.addWidget(picker)
+            field(models, caption, picker)
             return picker
-
-        self.model_input = model_picker('ELSŐDLEGES MODELL', cfg.get('model'))
-        self.fallback_input = model_picker('TARTALÉK MODELL', cfg.get('fallback_model'), True)
-        api_buttons = QHBoxLayout()
+        self.model_input = model_picker('Elsődleges modell', cfg.get('model'))
+        self.fallback_input = model_picker('Tartalék modell · opcionális', cfg.get('fallback_model'), True)
+        api_buttons = QVBoxLayout()
         self.test_api_button = self.btn('Kapcsolat tesztelése', lambda: self.start_model_request('test'))
-        self.load_models_button = self.btn('Modellek lekérése', lambda: self.start_model_request('load'), role='primary')
+        self.load_models_button = self.btn('Modellek lekérése', lambda: self.start_model_request('load'))
         api_buttons.addWidget(self.test_api_button)
         api_buttons.addWidget(self.load_models_button)
-        settings_layout.addLayout(api_buttons)
-        self.api_test_status = QLabel('')
-        self.api_test_status.setWordWrap(True)
-        self.api_test_status.setTextFormat(Qt.TextFormat.PlainText)
+        models.addLayout(api_buttons)
+        models.addWidget(text_label('A teszt csak a kapcsolatot és a modelllistát ellenőrzi; nem indít fordítást.'))
+        self.api_test_status = text_label('', 'settingsStatus')
         self.api_test_status.setContentsMargins(12, 9, 12, 9)
         self.api_test_status.hide()
-        settings_layout.addWidget(self.api_test_status)
+        models.addWidget(self.api_test_status)
         self.discovery_worker = None
         self.discovery_task = None
-        model_hint = QLabel('A teszt a modelllista API-t és a hitelesítést ellenőrzi, nem indít fizetős fordítást. A listában nem minden modell képes képeket értelmezni.')
-        model_hint.setObjectName('small')
-        model_hint.setWordWrap(True)
-        settings_layout.addWidget(model_hint)
-        security_info = QLabel('Az API-kulcs titkosítva, a Windows Hitelesítőadat-kezelőben tárolódik. A képernyőkép csak kifejezett fordításkéréskor kerül elküldésre. HTTPS ellenőrzés bekapcsolva.')
-        security_info.setObjectName('small')
-        security_info.setWordWrap(True)
-        settings_layout.addWidget(security_info)
-        game_title = QLabel('JÁTÉK FELISMERÉSE ÉS ELŐZMÉNYEK')
-        game_title.setObjectName('section')
-        settings_layout.addWidget(game_title)
-        self.game_detection_status = QLabel('Játék felismerésének ellenőrzése…')
-        self.game_detection_status.setWordWrap(True)
-        self.game_detection_status.setObjectName('small')
-        settings_layout.addWidget(self.game_detection_status)
+        connection.addStretch()
+
+        game = card(games, 'Játék felismerése', 'A fordítások automatikusan a felismert játék mappájába kerülnek.')
+        self.game_detection_status = text_label('Játék felismerésének ellenőrzése…', 'settingsStatus')
+        game.addWidget(self.game_detection_status)
         self.manual_game_input = QLineEdit()
         self.manual_game_input.setMaxLength(80)
-        self.manual_game_input.setPlaceholderText('Játék címe (ha nem sikerült felismerni)')
-        self.manual_game_input.setToolTip('Felismert játék neve; ismeretlen játéknál itt adható meg a párosításhoz a cím.')
-        settings_layout.addWidget(self.manual_game_input)
+        self.manual_game_input.setPlaceholderText('Az aktív játék címe')
+        field(game, 'Játék neve', self.manual_game_input)
         self.pair_game_requested = None
-        self.pair_game_button = QPushButton('Aktív játék párosítása')
-        self.pair_game_button.setToolTip('A legutóbb aktív játék EXE-fájlját összekapcsolja a megadott névvel.')
-        self.pair_game_button.clicked.connect(self._pair_current_game)
-        settings_layout.addWidget(self.pair_game_button)
-        self.game_detection_help = QLabel(
-            'A felismerés Windows-folyamat és helyi Steam/Epic/GOG/Xbox adatok alapján történik. '
-            'Ismeretlen játéknál add meg a címet, majd nyomd meg a Párosítás gombot. '
-            'Az előzmények a játék nevű mappába kerülnek; ismeretlen játék esetén rendezetlenül maradnak.')
-        self.game_detection_help.setObjectName('small')
-        self.game_detection_help.setWordWrap(True)
-        settings_layout.addWidget(self.game_detection_help)
+        self.pair_game_button = self.btn('Aktív játék párosítása', self._pair_current_game)
+        self.pair_game_button.setToolTip('A legutóbb aktív játék EXE-fájlját párosítja a megadott névvel.')
+        game.addWidget(self.pair_game_button)
+        self.game_detection_help = text_label('A felismerés helyi Steam/Epic/GOG/Xbox adatokból dolgozik. Ha a játék ismeretlen, add meg a címét és párosítsd. Felismerés nélkül a mentések rendezetlenül maradnak.')
+        game.addWidget(self.game_detection_help)
+        games.addStretch()
         self.game_status_provider = None
         self.game_override_changed = None
         self.game_status_timer = QTimer(self)
         self.game_status_timer.setInterval(2500)
         self.game_status_timer.timeout.connect(self.refresh_game_status)
         self.game_status_timer.start()
-        shortcut_title = QLabel('GYORSBILLENTYŰK ÉS FPS MÓD')
-        shortcut_title.setObjectName('section')
-        settings_layout.addWidget(shortcut_title)
-        shortcut_note = QLabel('Kattints a mezőre, és nyomd le a kívánt kombinációt vagy az oldalsó egérgombot. Esc: megszakítás · Backspace: kikapcsolás. A Mouse3/Mouse4/Mouse5 továbbra is eljut a játékhoz. A bezárás-parancs csak az ablakot vagy kijelölést zárja be.')
-        shortcut_note.setObjectName('small')
-        shortcut_note.setWordWrap(True)
-        settings_layout.addWidget(shortcut_note)
+
+        keys = card(shortcuts, 'Gyorsbillentyűk', 'Kattints egy mezőre, majd nyomd le a kombinációt vagy egérgombot. Esc: megszakítás · Backspace: kikapcsolás.')
         self.shortcut_inputs = {}
         for action, label in ACTION_NAMES.items():
-            row = QHBoxLayout()
-            label_widget = QLabel(label)
-            label_widget.setMinimumWidth(180)
-            row.addWidget(label_widget)
             picker = ShortcutRecorder()
             picker.setText(self.cfg.get('hotkeys', HOTKEY_DEFAULTS).get(action, ''))
             picker.capture_started.connect(self.shortcut_capture_started.emit)
             picker.capture_finished.connect(self.shortcut_capture_finished.emit)
             self.shortcut_inputs[action] = picker
-            row.addWidget(picker, 1)
-            settings_layout.addLayout(row)
-        fps_row = QHBoxLayout()
-        fps_row.addWidget(QLabel('FPS középső képkivágás: szélesség'))
+            field(keys, label, picker)
+        keys.addWidget(text_label('A Mouse3/4/5 a játékhoz is eljut. A bezárás csak az ablakot vagy a kijelölést zárja be.'))
+        fps = card(shortcuts, 'FPS-képkivágás', 'Az FPS-parancs a képernyő közepét fordítja, külön kijelölés nélkül.')
         self.fps_width_input = QSpinBox()
-        self.fps_width_input.setRange(15, 100)
-        self.fps_width_input.setSuffix('%')
-        fps_row.addWidget(self.fps_width_input)
-        fps_row.addWidget(QLabel('magasság'))
         self.fps_height_input = QSpinBox()
-        self.fps_height_input.setRange(15, 100)
-        self.fps_height_input.setSuffix('%')
-        fps_row.addWidget(self.fps_height_input)
-        settings_layout.addLayout(fps_row)
-        fps_note = QLabel('FPS módban a kijelölés helyett azonnal a képernyő középső részét fordítja. Nem kell mozgatnod az egérmutatót. A képrögzítés kizárólag kérésre történik.')
-        fps_note.setObjectName('small')
-        fps_note.setWordWrap(True)
-        settings_layout.addWidget(fps_note)
-        audio_title = QLabel('ÉLŐ HANGFORDÍTÁS')
-        audio_title.setObjectName('section')
-        settings_layout.addWidget(audio_title)
-        audio_note = QLabel('Az élő magyar felirat mindig átkattintható. A mérete, pozíciója és átlátszósága kizárólag a hangfordítás beállításaiban módosítható.')
-        audio_note.setWordWrap(True)
-        audio_note.setObjectName('small')
-        settings_layout.addWidget(audio_note)
-        settings_layout.addWidget(self.btn('Hangfordítás beállításai…', self.audio_settings_requested.emit))
-        self.settings_status = QLabel('')
-        self.settings_status.setObjectName('status')
-        self.settings_status.setWordWrap(True)
+        for widget, caption, key, default in (
+                (self.fps_width_input, 'Szélesség', 'fps_width_percent', 55),
+                (self.fps_height_input, 'Magasság', 'fps_height_percent', 40)):
+            widget.setRange(15, 100)
+            widget.setSuffix(' %')
+            widget.setValue(int(cfg.get(key, default)))
+            field(fps, caption, widget)
+        shortcuts.addStretch()
+        self.settings_status = text_label('', 'settingsStatus')
         settings_layout.addWidget(self.settings_status)
         settings_actions = QHBoxLayout()
         settings_actions.addStretch()
         settings_actions.addWidget(self.btn('Mégse', self.close_settings))
-        settings_actions.addWidget(self.btn('Beállítások mentése', self.save_settings, role='primary'))
+        settings_actions.addWidget(self.btn('Mentés', self.save_settings, role='primary'))
         settings_layout.addLayout(settings_actions)
-        settings_layout.addStretch()
         content.addWidget(self.settings_panel, 1)
         self.settings_panel.hide()
 
@@ -1202,10 +1155,11 @@ class Overlay(QWidget):
         content.addWidget(self.history_panel, 2)
         self.history_panel.hide()
 
-        self.audio_settings_scroll = QScrollArea()
-        self.audio_settings_scroll.setWidgetResizable(True)
-        self.audio_settings_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self.audio_settings_scroll.setStyleSheet('QScrollArea {background: transparent; border: 0;}')
+        # Each tab scrolls independently; keeping the footer outside the scroll
+        # area makes Save and Back reachable even in a small window.
+        self.audio_settings_scroll = QFrame()
+        audio_layout = QVBoxLayout(self.audio_settings_scroll)
+        audio_layout.setContentsMargins(0, 0, 0, 0)
         content.addWidget(self.audio_settings_scroll, 1)
         self.audio_settings_scroll.hide()
 
@@ -1275,6 +1229,7 @@ class Overlay(QWidget):
         self.label.setHtml(html_body)
         self.label.verticalScrollBar().setValue(0)
         self._audio_result_open = True
+        self.update_history_button()
         self.resize(self._transcript_size)
         self._mode_switching = False
         self.show()
@@ -1311,7 +1266,7 @@ class Overlay(QWidget):
 
     def attach_audio_settings(self, settings):
         self.audio_settings_panel = settings
-        self.audio_settings_scroll.setWidget(settings)
+        self.audio_settings_scroll.layout().addWidget(settings)
         settings._open_settings_callback = self.show_audio_settings
         settings._close_settings_callback = self.close_audio_settings
 
@@ -1338,8 +1293,11 @@ class Overlay(QWidget):
         self.label.hide()
         self.subtitle.hide()
         self.audio_settings_scroll.show()
-        self.resize(self._audio_size)
+        if self._audio_return_mode != 'settings':
+            self.resize(self._settings_size)
+        self._audio_size = QSize(self._settings_size)
         self._mode_switching = False
+        self.update_history_button()
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         self.show()
         self.raise_()
@@ -1348,13 +1306,13 @@ class Overlay(QWidget):
     def close_audio_settings(self):
         if self.audio_settings_scroll.isHidden():
             return
-        self._audio_size = self.size()
+        self._settings_size = self.size()
+        self._audio_size = QSize(self._settings_size)
         self._mode_switching = True
         self.audio_settings_scroll.hide()
         mode = self._audio_return_mode
         if mode == 'settings':
             self.settings_panel.show()
-            self.resize(self._settings_size)
         else:
             self.label.show()
             self.subtitle.show()
@@ -1408,11 +1366,23 @@ class Overlay(QWidget):
             self.manual_game_input.setText(recognized)
         self.manual_game_input.setEnabled(True)
 
+    def show_general_settings(self):
+        if self.settings_panel.isHidden():
+            self.toggle_settings()
+        else:
+            self.general_settings_button.setChecked(True)
+
     def toggle_settings(self):
         if self._audio_result_open:
             self.close_audio_result()
         if not self.audio_settings_scroll.isHidden():
+            # Switching with the gear or navigation button opens the general
+            # settings without closing and reopening the settings workspace.
+            if self._audio_return_mode != 'settings':
+                self._history_before_settings = self._audio_return_mode == 'history'
+            self._audio_return_mode = 'settings'
             self.close_audio_settings()
+            return
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
         if self.settings_panel.isVisible():
             self.close_settings()
@@ -1590,10 +1560,9 @@ class Overlay(QWidget):
             if not self._mode_switching:
                 if self._audio_result_open:
                     self._transcript_size = self.size()
-                elif not self.audio_settings_scroll.isHidden():
-                    self._audio_size = self.size()
-                elif not self.settings_panel.isHidden():
+                elif not self.audio_settings_scroll.isHidden() or not self.settings_panel.isHidden():
                     self._settings_size = self.size()
+                    self._audio_size = QSize(self._settings_size)
                 elif not self.history_panel.isHidden():
                     self._history_size = self.size()
                 else:
@@ -1653,9 +1622,8 @@ class Overlay(QWidget):
             self._settings_size = QSize(
                 max(465, min(1400, int(data.get('settings_width', w)))),
                 max(250, min(1100, int(data.get('settings_height', 680)))))
-            self._audio_size = QSize(
-                max(465, min(1400, int(data.get('audio_width', 750)))),
-                max(250, min(1100, int(data.get('audio_height', 790)))))
+            # Legacy audio dimensions no longer override the shared workspace.
+            self._audio_size = QSize(self._settings_size)
             self._transcript_size = QSize(
                 max(465, min(1400, int(data.get('transcript_width', 700)))),
                 max(250, min(1100, int(data.get('transcript_height', 760)))))
@@ -2079,6 +2047,14 @@ class Overlay(QWidget):
             self.set_history_open(False)
 
     def update_history_button(self):
+        general = not self.settings_panel.isHidden()
+        audio = not self.audio_settings_scroll.isHidden()
+        self.settings_navigation.setVisible((general or audio) and not self._audio_result_open)
+        self.general_settings_button.setChecked(general)
+        self.audio_settings_button.setChecked(audio)
+        self.settings_button.setProperty('role', 'topActive' if general or audio else 'top')
+        self.settings_button.style().unpolish(self.settings_button)
+        self.settings_button.style().polish(self.settings_button)
         active = not self.history_panel.isHidden() and self.settings_panel.isHidden()
         self.history_button.setProperty('role', 'topActive' if active else 'top')
         self.history_button.style().unpolish(self.history_button)
@@ -2790,4 +2766,5 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
