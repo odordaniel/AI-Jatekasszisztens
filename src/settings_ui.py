@@ -1,7 +1,7 @@
 """Shared presentation for the image and audio settings pages."""
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFrame, QLabel, QScrollArea, QVBoxLayout,
-                               QTabWidget, QSizePolicy)
+                               QTabWidget, QSizePolicy, QComboBox)
 
 
 SETTINGS_STYLE = '''
@@ -41,6 +41,10 @@ def text_label(text, name='settingsHint'):
     label = QLabel(text)
     label.setObjectName(name)
     label.setWordWrap(True)
+    # Native font metrics must not turn a wrapped caption into a fixed width.
+    policy = label.sizePolicy()
+    policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+    label.setSizePolicy(policy)
     label.setTextFormat(Qt.TextFormat.PlainText)
     return label
 
@@ -87,6 +91,11 @@ def field(layout, caption, widget):
     label = text_label(caption, 'settingsLabel')
     label.setBuddy(widget)
     layout.addWidget(label)
+    if isinstance(widget, QComboBox):
+        # Device names and model IDs can be much wider than the settings pane.
+        # Keep their complete values; size the editor independently of them.
+        widget.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        widget.setMinimumContentsLength(12)
     widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     layout.addWidget(widget)
     return label

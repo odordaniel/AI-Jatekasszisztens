@@ -120,12 +120,26 @@ class SettingsNavigationTests(unittest.TestCase):
                 self.window.show_audio_settings()
             tabs = self.settings.settings_tabs if audio else self.window.settings_tabs
             for index in range(tabs.count()):
-                tabs.setCurrentIndex(index)
-                self.flush()
-                self.assertEqual(self.window.width(), 465)
-                scroll = tabs.widget(index)
-                self.assertIsInstance(scroll, QScrollArea)
-                self.assertLessEqual(scroll.widget().minimumSizeHint().width(), scroll.viewport().width())
+                with self.subTest(view='audio' if audio else 'general', tab=tabs.tabText(index)):
+                    tabs.setCurrentIndex(index)
+                    self.flush()
+                    self.assertEqual(self.window.width(), 465)
+                    scroll = tabs.widget(index)
+                    self.assertIsInstance(scroll, QScrollArea)
+                    self.assertLessEqual(scroll.widget().minimumSizeHint().width(), scroll.viewport().width())
+
+    def test_long_device_and_model_names_do_not_widen_tabs(self):
+        long_model = 'provider/' + 'long-model-identifier-' * 12
+        for combo in (self.window.model_input, self.window.fallback_input,
+                      self.settings.models, self.settings.text_model, self.settings.text_fallback):
+            combo.addItem(long_model)
+            combo.setCurrentText(long_model)
+        self.settings.devices.clear()
+        device_name = 'Monitor - High Definition Audio Device ' * 8
+        self.settings.devices.addItem(device_name, 'test-device')
+        self.test_tabs_fit_narrow_window_without_horizontal_scroll()
+        self.assertEqual(self.settings.devices.currentText(), device_name)
+        self.assertEqual(self.settings.text_model.currentText(), long_model)
 
     def test_settings_size_is_shared_and_persisted(self):
         self.window.toggle_settings()

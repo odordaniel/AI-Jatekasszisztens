@@ -961,7 +961,7 @@ class Overlay(QWidget):
             return picker
         self.model_input = model_picker('Elsődleges modell', cfg.get('model'))
         self.fallback_input = model_picker('Tartalék modell · opcionális', cfg.get('fallback_model'), True)
-        api_buttons = QHBoxLayout()
+        api_buttons = QVBoxLayout()
         self.test_api_button = self.btn('Kapcsolat tesztelése', lambda: self.start_model_request('test'))
         self.load_models_button = self.btn('Modellek lekérése', lambda: self.start_model_request('load'))
         api_buttons.addWidget(self.test_api_button)

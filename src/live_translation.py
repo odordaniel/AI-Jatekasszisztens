@@ -796,7 +796,7 @@ class LiveTranslationSettings(QWidget):
         speech_page.addStretch()
 
         translation = card(text_page, 'Fordítókapcsolat', 'A felismert párbeszédet ez a szolgáltatás fordítja magyarra.')
-        self.use_main_api = QCheckBox('A képernyőfordító API-kapcsolatának használata')
+        self.use_main_api = QCheckBox('Közös API-kapcsolat')
         self.use_main_api.setChecked(bool(self.cfg.get('use_app_text_api', True)))
         translation.addWidget(self.use_main_api)
         current_app = self._main_config()
@@ -806,7 +806,7 @@ class LiveTranslationSettings(QWidget):
         self.text_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.text_key_label = field(translation, 'Fordító API-kulcs', self.text_key)
         self.use_main_api.toggled.connect(self._text_api_mode_changed)
-        translation.addWidget(text_label('A közös kapcsolat a mentett képernyőfordító-beállításokat használja.'))
+        translation.addWidget(text_label('Bekapcsolva a képernyőfordító mentett API-kapcsolatát használja. Kikapcsolva külön URL és API-kulcs adható meg.'))
         models = card(text_page, 'Fordítómodellek')
         self.text_model = QComboBox()
         self.text_model.setEditable(True)
