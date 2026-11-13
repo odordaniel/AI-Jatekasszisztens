@@ -37,7 +37,9 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - A beállításlapok közös stílusa és kártya-/mezőelemei a `src/settings_ui.py` modulban találhatók. A lapok tartalma görgethető, a mentés és visszalépés gombjai kívül maradnak a görgethető területen.
 - A „kilépés” gyorsbillentyű a látható ablakot rejti el, kijelölés közben megszakít, **nem zárja be** a tálcán futó programot. Teljes kilépés a tálcamenüből.
 - Gyorsbillentyűk szabadon rögzíthetők, Mouse3 (görgő), Mouse4, Mouse5 támogatott; játékbeli gombnyomást a hook nem nyeli el.
-- Előzmények kereshetők, jobb kattintásos menüből kezelhetők, Ctrl/Shift többes kijelöléssel másolhatók, mozgathatók, átnevezhetők és törölhetők; a törlési megerősítés ugyanabban az ablakban marad.
+- Az előzmények műveletei a jobb klikkes menüben vannak; nincs külön műveleti gombsor. Ctrl/Shift többes kijelöléssel mappák és fordítások vegyesen törölhetők, a mappák tartalmával együtt. A megerősítés a deduplikált teljes darabszámot mutatja, és ugyanabban az ablakban marad.
+- Fordítások kivágása/másolása/beillesztése: Ctrl+X/C/V; átnevezés: F2; törlés: Delete; új mappa: Ctrl+Shift+N; frissítés: F5; összes kijelölése: Ctrl+A. A kivágás a sikeres beillesztésig nem módosítja a forrást, Esc megszakítja. A listaelemek és a kivágási vágólap stabil `_id` azonosítóval hivatkoznak a fordításokra, nem változó listaindexekkel.
+- Mappákat is törlő művelet előtt a régi előzmény- és mappaállapot a `forditasok.delete-pending.json` helyreállítási naplóba kerül. Siker után törlődik; félbeszakításkor a következő indulás visszaállítja a korábbi állapotot. Ha a helyreállítás nem sikerül, a további mentés tiltott, a napló megmarad.
 - Kép- és hangfordítás esetén a felismert játék mappájába kerülnek a mentések; törölt mappa újralétrejön, amennyiben a játék felismerése sikeres. Ismeretlen játéknál nem szabad az előző játék mappájába menteni.
 - A felismerés a Windows-folyamatokból, helyi telepítési adatokból és mentett párosításokból dolgozik. Nincs képalapú vagy hangszöveges AI-játékazonosítás.
 - API URL, kulcs, elsődleges/fallback modell és modelllista lekérés a beállításokban.
@@ -76,4 +78,5 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
 

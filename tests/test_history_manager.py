@@ -70,6 +70,104 @@ class HistoryManagerTests(unittest.TestCase):
         self.assertIn("('Ctrl+C', self.copy_selected_history)", text)
         self.assertIn("('Ctrl+V', self.paste_history)", text)
         self.assertIn("('Delete', self.delete_selected_history)", text)
+        self.assertIn("('Ctrl+X', self.cut_selected_history)", text)
+
+    def test_cut_moves_current_record_after_index_shift_and_rename(self):
+        original = self.store.items[2]
+        self.store.record_id(original)
+        clipboard = [copy.deepcopy(original)]
+        self.assertTrue(self.store.delete(0))
+        self.assertTrue(self.store.rename_folder('Játék', 'Más név'))
+        self.assertTrue(self.store.paste_records(clipboard, '', cut=True))
+        self.assertEqual(len(self.store.items), 3)
+        self.assertEqual(self.store.items[1]['text'], 'Fordítás 2')
+        self.assertEqual(self.store.items[1]['folder'], '')
+        self.assertEqual(self.store.items[1].get('title'), None)
+        self.assertEqual(self.store.items[0]['folder'], 'Más név')
+
+    def test_cut_deleted_source_cannot_move_replacement_at_same_index(self):
+        self.store.record_id(self.store.items[0])
+        clipboard = [copy.deepcopy(self.store.items[0])]
+        self.assertTrue(self.store.delete(0))
+        previous = copy.deepcopy(self.store.items)
+        self.assertFalse(self.store.paste_records(clipboard, '', cut=True))
+        self.assertEqual(self.store.items, previous)
+
+    def test_failed_cut_paste_preserves_source(self):
+        self.store.record_id(self.store.items[1])
+        clipboard = [copy.deepcopy(self.store.items[1])]
+        old = copy.deepcopy(self.store.items)
+        self.store.save = lambda: False
+        self.assertFalse(self.store.paste_records(clipboard, '', cut=True))
+        self.assertEqual(self.store.items, old)
+
+    def test_copy_paste_generates_fresh_identity(self):
+        identifier = self.store.record_id(self.store.items[0])
+        self.assertTrue(self.store.paste_records([self.store.items[0]], 'Játék'))
+        self.assertEqual(len(self.store.items), 5)
+        self.assertNotEqual(self.store.items[-1]['_id'], identifier)
+        self.assertEqual(self.store.items[0]['folder'], 'Játék')
+
+    def test_mixed_delete_removes_folder_contents_and_explicit_records_once(self):
+        self.assertTrue(self.store.create_folder('Marad'))
+        self.store.items.extend([dict(text='Külön törlendő'), dict(text='Marad', folder='Marad')])
+        self.assertTrue(self.store.delete_selection([0, 4], ['Játék']))
+        self.assertEqual(self.store.items, [dict(text='Marad', folder='Marad')])
+        self.assertEqual(self.store.folders, ['Marad'])
+        restored = self.ns['HistoryStore']()
+        self.assertEqual(restored.items, self.store.items)
+        self.assertEqual(restored.folders, self.store.folders)
+
+    def test_mixed_delete_can_remove_multiple_empty_folders(self):
+        self.store.create_folder('Üres 1')
+        self.store.create_folder('Üres 2')
+        self.assertTrue(self.store.delete_selection([], ['Üres 1', 'Üres 2']))
+        self.assertEqual(len(self.store.items), 4)
+        self.assertEqual(self.store.folders, ['Játék'])
+
+    def test_failed_folder_save_rolls_back_history_on_disk(self):
+        previous = copy.deepcopy(self.store.items)
+        self.store.save_folders = lambda: False
+        self.assertFalse(self.store.delete_selection([0], ['Játék']))
+        self.assertEqual(self.store.items, previous)
+        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text()), previous)
+        restored = self.ns['HistoryStore']()
+        self.assertEqual(restored.items, previous)
+        self.assertEqual(restored.folders, ['Játék'])
+
+    def test_interrupted_folder_delete_is_recovered_on_restart(self):
+        previous = copy.deepcopy(self.store.items)
+        journal = self.ns['HISTORY_PATH'].with_suffix('.delete-pending.json')
+        journal.write_text(json.dumps(dict(items=previous, folders=['Játék'])))
+        self.ns['HISTORY_PATH'].write_text('[]')
+        self.ns['FOLDERS_PATH'].write_text('[]')
+        restored = self.ns['HistoryStore']()
+        self.assertEqual(restored.items, previous)
+        self.assertEqual(restored.folders, ['Játék'])
+        self.assertFalse(journal.exists())
+
+    def test_invalid_pending_delete_is_preserved_and_blocks_writes(self):
+        journal = self.ns['HISTORY_PATH'].with_suffix('.delete-pending.json')
+        journal.write_text('{broken')
+        restored = self.ns['HistoryStore']()
+        self.assertFalse(restored.add('New entry'))
+        self.assertFalse(restored.create_folder('New folder'))
+        self.assertEqual(journal.read_text(), '{broken')
+
+    def test_failed_rollback_can_recover_original_records_after_restart(self):
+        previous = copy.deepcopy(self.store.items)
+        original_save = self.store.save
+        calls = []
+        def first_save_only():
+            calls.append(True)
+            return original_save() if len(calls) == 1 else False
+        self.store.save = first_save_only
+        self.store.save_folders = lambda: False
+        self.assertFalse(self.store.delete_selection([], ['Játék']))
+        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text()), [])
+        restored = self.ns['HistoryStore']()
+        self.assertEqual(restored.items, previous)
+        self.assertEqual(restored.folders, ['Játék'])
 
     def test_damaged_history_preserved_before_next_save(self):
         path = self.ns['HISTORY_PATH']
@@ -123,4 +221,5 @@ class HistoryManagerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
 

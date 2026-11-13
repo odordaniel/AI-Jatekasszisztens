@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 
 import requests
 from settings_ui import SETTINGS_STYLE, text_label, settings_tabs, tab_page, card, field
-from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer, QRect, QPoint, QSize, QEvent, QLockFile
+from PySide6.QtCore import QObject, Qt, QThread, Signal, QTimer, QRect, QPoint, QSize, QEvent, QLockFile, QItemSelectionModel
 from PySide6.QtGui import QColor, QFont, QPainter, QPen, QKeySequence, QShortcut, QIcon, QCursor
 from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget, QHBoxLayout, QPushButton, QFrame, QLineEdit, QListWidget, QListWidgetItem, QComboBox, QTextEdit, QSizeGrip, QGraphicsDropShadowEffect, QAbstractItemView, QSizePolicy, QCheckBox, QTextBrowser, QSystemTrayIcon, QMenu, QMessageBox, QSpinBox, QScrollArea
 
@@ -551,7 +551,27 @@ class HistoryStore:
         self._history_writable = True
         self._folders_writable = True
         with _STORAGE_LOCK:
+            if not self._recover_interrupted_delete():
+                self._history_writable = self._folders_writable = False
             self._load_saved_data()
+
+    def _recover_interrupted_delete(self):
+        """Restore both files if a two-file deletion was interrupted."""
+        journal = HISTORY_PATH.with_suffix('.delete-pending.json')
+        if not journal.exists():
+            return True
+        try:
+            previous = json.loads(journal.read_text(encoding='utf-8'))
+            if not isinstance(previous.get('items'), list) or not isinstance(previous.get('folders'), list):
+                return False
+            self.items, self.folders = previous['items'], previous['folders']
+            if not self.save() or not self.save_folders():
+                return False
+            journal.unlink()
+            return True
+        except (OSError, ValueError, AttributeError):
+            logging.warning('Félbeszakadt törlés helyreállítása sikertelen; a mentés letiltva.')
+            return False
 
     @staticmethod
     def _preserve_unreadable_file(path):
@@ -577,7 +597,7 @@ class HistoryStore:
                     self.folders = list(dict.fromkeys(self.folders))
             except (OSError, ValueError) as exc:
                 logging.warning('Mappák betöltési hiba: %s', type(exc).__name__)
-                self._folders_writable = self._preserve_unreadable_file(FOLDERS_PATH)
+                self._folders_writable = self._folders_writable and self._preserve_unreadable_file(FOLDERS_PATH)
         if HISTORY_PATH.exists():
             try:
                 loaded = json.loads(HISTORY_PATH.read_text(encoding='utf-8'))
@@ -587,7 +607,7 @@ class HistoryStore:
                     self.items = [x for x in loaded if isinstance(x, dict) and isinstance(x.get('text'), str)]
             except (OSError, ValueError) as exc:
                 logging.warning('Előzmények betöltési hiba: %s', type(exc).__name__)
-                self._history_writable = self._preserve_unreadable_file(HISTORY_PATH)
+                self._history_writable = self._history_writable and self._preserve_unreadable_file(HISTORY_PATH)
 
     def save_folders(self):
         with _STORAGE_LOCK:
@@ -689,6 +709,92 @@ class HistoryStore:
                 logging.warning('Előzmények mentési hiba: %s', type(exc).__name__)
                 return False
 
+    @staticmethod
+    def record_id(entry):
+        """Stable clipboard/selection identity, independent of list positions."""
+        from uuid import uuid4
+        if not isinstance(entry.get('_id'), str) or not entry['_id']:
+            entry['_id'] = uuid4().hex
+        return entry['_id']
+
+    def paste_records(self, records, destination, cut=False):
+        if destination and destination not in self.folders:
+            return False
+        if not records or any(not isinstance(x, dict) or not isinstance(x.get('text'), str) for x in records):
+            return False
+        if cut:
+            identifiers = [x.get('_id') for x in records]
+            lookup = {x.get('_id'): i for i, x in enumerate(self.items) if x.get('_id')}
+            if len(set(identifiers)) != len(identifiers) or any(x not in lookup for x in identifiers):
+                return False
+            return self.move_many([lookup[x] for x in identifiers], destination)
+        duplicates = copy.deepcopy(records)
+        for entry in duplicates:
+            entry.pop('_id', None)
+            self.record_id(entry)
+            entry['folder'] = destination
+            title = entry.get('title') or (entry['text'].splitlines() or ['Fordítás'])[0][:80]
+            entry['title'] = str(title)[:100] + ' (másolat)'
+        self.items.extend(duplicates)
+        if not self.save():
+            del self.items[-len(duplicates):]
+            return False
+        return True
+
+    def deletion_indexes(self, indexes, folders=()):
+        selected = set(indexes)
+        folder_names = set(folders)
+        if (any(not isinstance(i, int) or not 0 <= i < len(self.items) for i in selected)
+                or not folder_names.issubset(self.folders)):
+            return None
+        selected.update(i for i, entry in enumerate(self.items) if entry.get('folder', '') in folder_names)
+        return sorted(selected)
+
+    def delete_selection(self, indexes, folders=()):
+        """Delete the union of selected records and selected folder contents."""
+        with _STORAGE_LOCK:
+            selected = self.deletion_indexes(indexes, folders)
+            names = set(folders)
+            if selected is None or not (selected or names):
+                return False
+            if not self._history_writable or (names and not self._folders_writable):
+                return False
+            old_items, old_folders = self.items, self.folders
+            journal = HISTORY_PATH.with_suffix('.delete-pending.json')
+            if names:
+                try:
+                    # Keep the previous state until BOTH replacements succeed.
+                    # A restart can restore it even if the rollback write fails.
+                    if journal.exists():
+                        return False
+                    temporary = journal.with_suffix('.tmp')
+                    temporary.write_text(json.dumps({'items': old_items, 'folders': old_folders},
+                                                    ensure_ascii=False), encoding='utf-8')
+                    temporary.replace(journal)
+                except (OSError, TypeError, ValueError):
+                    return False
+            removed = set(selected)
+            self.items = [x for i, x in enumerate(self.items) if i not in removed]
+            self.folders = [x for x in self.folders if x not in names]
+            committed = self.save() and (not names or self.save_folders())
+            if committed and names:
+                try:
+                    journal.unlink()
+                except OSError:
+                    committed = False
+            if not committed:
+                self.items, self.folders = old_items, old_folders
+                restored = self.save() and (not names or self.save_folders())
+                if restored and names:
+                    try:
+                        journal.unlink(missing_ok=True)
+                    except OSError:
+                        restored = False
+                if not restored and names:
+                    self._history_writable = self._folders_writable = False
+                return False
+            return True
+
     def copy_many(self, indexes, destination):
         """Duplicate records as one write; leave the original records unchanged."""
         if destination and destination not in self.folders:
@@ -699,6 +805,8 @@ class HistoryStore:
         duplicates = []
         for i in valid:
             entry = copy.deepcopy(self.items[i])
+            entry.pop('_id', None)
+            self.record_id(entry)
             entry['folder'] = destination
             title = entry.get('title') or (entry['text'].splitlines() or ['Fordítás'])[0][:80]
             entry['title'] = str(title)[:100] + ' (másolat)'
@@ -805,6 +913,11 @@ class Overlay(QWidget):
     QScrollBar:vertical { background: #172337; width: 10px; margin: 2px; }
     QScrollBar::handle:vertical { background: #456080; border-radius: 4px; min-height: 22px; }
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+    QMenu { background: #192337; color: #e9f0fa; border: 1px solid #405779; padding: 5px; }
+    QMenu::item { padding: 7px 22px 7px 12px; border-radius: 5px; }
+    QMenu::item:selected { background: #2c5a91; }
+    QMenu::item:disabled { color: #71839b; }
+    QMenu::separator { height: 1px; background: #304057; margin: 4px 6px; }
     """
 
     STYLE += SETTINGS_STYLE
@@ -820,6 +933,7 @@ class Overlay(QWidget):
         self.edit_index = None
         self.edit_folder = None
         self._history_clipboard = []
+        self._history_clipboard_cut = False
         self._restoring_geometry = True
         self._history_before_settings = False
         # User preference is independent from temporary hiding during translation.
@@ -1059,11 +1173,6 @@ class Overlay(QWidget):
         self.folder_filter.setToolTip('Előzmények szűrése mappa szerint')
         self.folder_filter.currentIndexChanged.connect(self.refresh_history)
         folder_row.addWidget(self.folder_filter, 1)
-        self.new_folder_button = self.btn('+ Mappa', lambda: self.begin_edit('new_folder'), 'Új mappa létrehozása')
-        self.rename_folder_button = self.btn('Átnevez', lambda: self.begin_edit('rename_folder'), 'Kiválasztott mappa átnevezése')
-        self.delete_folder_button = self.btn('Töröl', self.ask_delete_folder, 'Mappa törlése (fordítások megmaradnak)')
-        for b in (self.new_folder_button, self.rename_folder_button, self.delete_folder_button):
-            folder_row.addWidget(b)
         history_layout.addLayout(folder_row)
 
         self.history_list = QListWidget()
@@ -1081,35 +1190,20 @@ class Overlay(QWidget):
         self.history_list.customContextMenuRequested.connect(self.history_context_menu)
         history_layout.addWidget(self.history_list, 1)
         self.rename_shortcut = QShortcut(QKeySequence('F2'), self.history_list)
+        self.rename_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self.rename_shortcut.activated.connect(self.rename_selected)
-        for key, method in (('Ctrl+C', self.copy_selected_history),
+        for key, method in (('Ctrl+X', self.cut_selected_history),
+                            ('Ctrl+C', self.copy_selected_history),
                             ('Ctrl+V', self.paste_history),
-                            ('Delete', self.delete_selected_history)):
+                            ('Delete', self.delete_selected_history),
+                            ('Ctrl+A', self.history_list.selectAll),
+                            ('Ctrl+Shift+N', lambda: self.begin_edit('new_folder')),
+                            ('F5', self.refresh_history),
+                            ('Escape', self.cancel_history_clipboard)):
             shortcut = QShortcut(QKeySequence(key), self.history_list)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             shortcut.activated.connect(method)
         # Retain shortcut lifetimes in the history list through their Qt parent.
-
-        action_row = QHBoxLayout()
-        self.open_entry_button = self.btn('Megnyitás', self.open_selected_history, 'Kijelölt fordítás megjelenítése', 'primary')
-        self.rename_entry_button = self.btn('Átnevezés', self.rename_selected, 'Egy kijelölt fordítás átnevezése (F2)')
-        self.delete_button = self.btn('Törlés', self.delete_selected_history, 'Kijelölt fordítások törlése', 'danger')
-        for b in (self.open_entry_button, self.rename_entry_button, self.delete_button):
-            action_row.addWidget(b)
-        self.copy_button = self.btn('Másolás', self.copy_selected_history, 'Kijelölt fordítások másolása (Ctrl+C)')
-        self.paste_button = self.btn('Beillesztés', self.paste_history, 'Másolatok létrehozása az aktuális mappában (Ctrl+V)')
-        action_row.addWidget(self.copy_button)
-        action_row.addWidget(self.paste_button)
-        history_layout.addLayout(action_row)
-
-        move_row = QHBoxLayout()
-        folder_hint = QLabel('Áthelyezés:')
-        folder_hint.setObjectName('small')
-        move_row.addWidget(folder_hint)
-        self.move_folder = QComboBox()
-        move_row.addWidget(self.move_folder, 1)
-        self.move_button = self.btn('Mappába', self.move_selected, 'Kijelölt fordítások áthelyezése')
-        move_row.addWidget(self.move_button)
-        history_layout.addLayout(move_row)
 
         self.edit_panel = QFrame()
         edit_layout = QVBoxLayout(self.edit_panel)
@@ -1122,8 +1216,10 @@ class Overlay(QWidget):
         self.edit_input.setMaxLength(120)
         self.edit_input.returnPressed.connect(self.apply_edit)
         edit_row.addWidget(self.edit_input, 1)
-        edit_row.addWidget(self.btn('Mentés', self.apply_edit, role='primary'))
-        edit_row.addWidget(self.btn('Mégse', self.cancel_edit))
+        edit_row.addWidget(QLabel('Enter: mentés · Esc: mégse'))
+        edit_cancel = QShortcut(QKeySequence('Escape'), self.edit_input)
+        edit_cancel.setContext(Qt.ShortcutContext.WidgetShortcut)
+        edit_cancel.activated.connect(self.cancel_edit)
         edit_layout.addLayout(edit_row)
         history_layout.addWidget(self.edit_panel)
         self.edit_panel.hide()
@@ -1142,11 +1238,6 @@ class Overlay(QWidget):
         history_layout.addWidget(self.confirm_panel)
         self.confirm_panel.hide()
 
-        footer_row = QHBoxLayout()
-        self.clear_button = self.btn('Összes előzmény törlése', self.clear_history, 'Minden fordítás törlése', 'danger')
-        footer_row.addWidget(self.clear_button)
-        footer_row.addStretch()
-        history_layout.addLayout(footer_row)
         self.history_status = QLabel('')
         self.history_status.setObjectName('status')
         self.history_status.setWordWrap(True)
@@ -1644,93 +1735,129 @@ class Overlay(QWidget):
             logging.warning('Ablakhelyzet visszaállítási hiba: %s', type(exc).__name__)
             self.resize(660, 370)
 
+    def history_index_for_item(self, item):
+        identifier = item.data(Qt.ItemDataRole.UserRole) if item else None
+        return next((i for i, entry in enumerate(self.history.items)
+                     if entry.get('_id') == identifier), None) if isinstance(identifier, str) else None
+
     def selected_indices(self):
-        return sorted({i for item in self.history_list.selectedItems()
-                       if isinstance((i := item.data(Qt.ItemDataRole.UserRole)), int)
-                       and 0 <= i < len(self.history.items)})
+        identifiers = {item.data(Qt.ItemDataRole.UserRole) for item in self.history_list.selectedItems()
+                       if isinstance(item.data(Qt.ItemDataRole.UserRole), str)}
+        return [i for i, entry in enumerate(self.history.items) if entry.get('_id') in identifiers]
+
+    def selected_folders(self):
+        return sorted({value[1] for item in self.history_list.selectedItems()
+                       if isinstance((value := item.data(Qt.ItemDataRole.UserRole)), tuple)
+                       and len(value) == 2 and value[0] == 'folder' and value[1] in self.history.folders})
 
     def selected_folder_row(self):
-        item = self.history_list.currentItem()
-        value = item.data(Qt.ItemDataRole.UserRole) if item else None
-        if isinstance(value, tuple) and len(value) == 2 and value[0] == 'folder':
-            return value[1]
-        return None
+        folders = self.selected_folders()
+        return folders[0] if len(self.history_list.selectedItems()) == 1 and len(folders) == 1 else None
 
     def rename_selected(self):
+        if len(self.history_list.selectedItems()) != 1:
+            self.history_notice('Átnevezéshez egy fordítást vagy mappát jelölj ki.')
+            return
         folder = self.selected_folder_row()
-        if folder in self.history.folders:
+        if folder is not None:
             self.begin_edit('rename_folder', folder)
         elif len(self.selected_indices()) == 1:
             self.begin_edit('rename_entry')
-        else:
-            self.history_notice('Átnevezéshez egy fordítást vagy mappát jelölj ki.')
+
+    def _set_history_clipboard(self, cut):
+        indexes = self.selected_indices()
+        if not indexes or self.selected_folders():
+            self.history_notice('A kivágáshoz vagy másoláshoz fordításokat jelölj ki.')
+            return
+        for i in indexes:
+            self.history.record_id(self.history.items[i])
+        self._history_clipboard = [copy.deepcopy(self.history.items[i]) for i in indexes]
+        self._history_clipboard_cut = cut
+        self.refresh_history()
+        action = 'kivágásra kijelölve' if cut else 'másolva'
+        self.history_notice(f'{len(indexes)} fordítás {action}. Nyisd meg a célmappát, majd Ctrl+V.')
 
     def copy_selected_history(self):
-        indexes = self.selected_indices()
-        if not indexes:
-            self.history_notice('Jelölj ki legalább egy fordítást a másoláshoz.')
-            return
-        # Copy the record contents, not transient list indexes.
-        self._history_clipboard = [copy.deepcopy(self.history.items[i]) for i in indexes]
-        self.paste_button.setEnabled(True)
-        self.history_notice(f'{len(indexes)} fordítás másolva. Válassz célmappát, majd Ctrl+V.')
+        self._set_history_clipboard(False)
 
-    def paste_history(self):
+    def cut_selected_history(self):
+        self._set_history_clipboard(True)
+
+    def cancel_history_clipboard(self):
+        if self._history_clipboard_cut:
+            self._history_clipboard = []
+            self._history_clipboard_cut = False
+            self.refresh_history()
+            self.history_notice('Kivágás megszakítva.')
+
+    def paste_history(self, destination=None):
         if not self._history_clipboard:
-            self.history_notice('Nincs másolt fordítás.')
+            self.history_notice('Nincs beilleszthető fordítás.')
             return
-        folder = self.selected_folder()
+        folder = self.selected_folder() if destination is None else destination
         if folder == '__unsorted__':
             folder = ''
-        if folder == '':
-            # The root view represents All folders, so paste to Unsorted.
-            folder = ''
-        originals = copy.deepcopy(self._history_clipboard)
-        for entry in originals:
-            entry['folder'] = folder
-            title = entry.get('title') or (entry.get('text', '').splitlines() or ['Fordítás'])[0][:80]
-            entry['title'] = str(title)[:100] + ' (másolat)'
-        self.history.items.extend(originals)
-        if not self.history.save():
-            del self.history.items[-len(originals):]
-            self.history_notice('Nem sikerült beilleszteni a fordításokat.')
+        count = len(self._history_clipboard)
+        cut = self._history_clipboard_cut
+        if not self.history.paste_records(self._history_clipboard, folder, cut=cut):
+            self.history_notice('A beillesztés sikertelen: mentési hiba, törölt célmappa vagy már nem létező forrás. A vágólap megmaradt.')
             return
+        if cut:
+            self._history_clipboard = []
+            self._history_clipboard_cut = False
         self.refresh_history()
-        self.history_notice(f'{len(originals)} fordítás beillesztve.')
+        self.history_notice(f'{count} fordítás ' + ('áthelyezve.' if cut else 'beillesztve.'))
+
+    def build_history_menu(self, destination=None):
+        indexes = self.selected_indices()
+        folders = self.selected_folders()
+        count = len(self.history_list.selectedItems())
+        menu = QMenu(self.history_list)
+        menu.setStyleSheet(self.STYLE)
+        if count == 1:
+            menu.addAction('Megnyitás', self.open_selected_history)
+            menu.addAction('Átnevezés (F2)', self.rename_selected)
+        if indexes and not folders:
+            menu.addSeparator()
+            menu.addAction('Kivágás (Ctrl+X)', self.cut_selected_history)
+            menu.addAction('Másolás (Ctrl+C)', self.copy_selected_history)
+            move_menu = menu.addMenu('Áthelyezés ide')
+            for name in ('', *self.history.folders):
+                move_menu.addAction(name or 'Rendezetlen', lambda checked=False, f=name: self.move_selected_to(f))
+        menu.addAction('Beillesztés (Ctrl+V)', lambda: self.paste_history(destination)).setEnabled(bool(self._history_clipboard))
+        if count:
+            menu.addAction('Törlés (Delete)', self.delete_selected_history)
+        menu.addSeparator()
+        menu.addAction('Új mappa (Ctrl+Shift+N)', lambda: self.begin_edit('new_folder'))
+        menu.addAction('Összes kijelölése (Ctrl+A)', self.history_list.selectAll).setEnabled(self.history_list.count() > 0)
+        menu.addAction('Frissítés (F5)', self.refresh_history)
+        menu.addSeparator()
+        menu.addAction('Összes előzmény törlése…', self.clear_history).setEnabled(bool(self.history.items or self.history.folders))
+        return menu
 
     def history_context_menu(self, position):
         item = self.history_list.itemAt(position)
-        if item is not None and not item.isSelected():
+        if item is None:
             self.history_list.clearSelection()
-            item.setSelected(True)
+            self.history_list.setCurrentItem(None)
+        elif not item.isSelected():
+            self.history_list.clearSelection()
             self.history_list.setCurrentItem(item)
-        indexes = self.selected_indices()
-        folder = self.selected_folder_row()
-        menu = QMenu(self.history_list)
-        if folder is not None and folder in self.history.folders:
-            menu.addAction('Mappa megnyitása', lambda f=folder: self.open_history_folder(f))
-            menu.addAction('Átnevezés (F2)', self.rename_selected)
-            menu.addAction('Mappa törlése', lambda f=folder: self.ask_delete('folder', f))
-        elif indexes:
-            if len(indexes) == 1:
-                menu.addAction('Megnyitás', self.open_selected_history)
-                menu.addAction('Átnevezés (F2)', self.rename_selected)
-            menu.addAction('Másolás (Ctrl+C)', self.copy_selected_history)
-            menu.addAction('Törlés (Delete)', self.delete_selected_history)
-        if menu.actions():
-            menu.addSeparator()
-        menu.addAction('Beillesztés (Ctrl+V)', self.paste_history).setEnabled(bool(self._history_clipboard))
-        menu.addAction('Új mappa', lambda: self.begin_edit('new_folder'))
-        menu.exec(self.history_list.mapToGlobal(position))
+            item.setSelected(True)
+        else:
+            self.history_list.setCurrentItem(item, QItemSelectionModel.SelectionFlag.NoUpdate)
+        destination = self.selected_folder_row() or self.selected_folder()
+        menu = self.build_history_menu(destination)
+        menu.exec(self.history_list.viewport().mapToGlobal(position))
+        menu.deleteLater()
 
     def open_history_folder(self, folder):
         self.folder_filter.setCurrentIndex(max(0, self.folder_filter.findData(folder)))
 
     def selected_index(self):
-        item = self.history_list.currentItem()
-        value = item.data(Qt.ItemDataRole.UserRole) if item else None
         indexes = self.selected_indices()
-        return value if isinstance(value, int) and value in indexes else (indexes[0] if indexes else None)
+        current = self.history_index_for_item(self.history_list.currentItem())
+        return current if current in indexes else (indexes[0] if indexes else None)
 
     def selected_folder(self):
         return self.folder_filter.currentData() or ''
@@ -1747,27 +1874,12 @@ class Overlay(QWidget):
         i = self.folder_filter.findData(selected)
         self.folder_filter.setCurrentIndex(max(0, i))
         self.folder_filter.blockSignals(False)
-        self.move_folder.clear()
-        self.move_folder.addItem('Rendezetlen', '')
-        for name in self.history.folders:
-            self.move_folder.addItem(name, name)
         self.refresh_history()
 
     def on_selection_change(self, *_):
-        indexes = self.selected_indices()
-        index = self.selected_index()
-        valid = bool(indexes)
-        for attr in ('delete_button', 'move_button', 'copy_button'):
-            getattr(self, attr).setEnabled(valid)
-        self.rename_entry_button.setEnabled(len(indexes) == 1 or self.selected_folder_row() in self.history.folders)
-        self.open_entry_button.setEnabled(len(indexes) == 1)
-        self.paste_button.setEnabled(bool(self._history_clipboard))
-        if valid:
-            folder = self.history.items[index].get('folder', '')
-            self.move_folder.setCurrentIndex(max(0, self.move_folder.findData(folder)))
-        folder = self.selected_folder()
-        self.rename_folder_button.setEnabled(folder in self.history.folders)
-        self.delete_folder_button.setEnabled(folder in self.history.folders)
+        total = len(self.history_list.selectedItems())
+        self.count_label.setText(f'{total} kijelölve' if total else
+                                 f'{getattr(self, "_history_visible_count", 0)} / {len(self.history.items)} fordítás')
 
     def begin_edit(self, action, folder_override=None):
         index = self.selected_index()
@@ -1780,7 +1892,7 @@ class Overlay(QWidget):
             return
         self.cancel_delete()
         self.edit_action = action
-        self.edit_index = index
+        self.edit_index = self.history.record_id(self.history.items[index]) if index is not None else None
         self.edit_folder = folder
         self.edit_label.setText({
             'new_folder': 'ÚJ MAPPA', 'rename_folder': 'MAPPA ÁTNEVEZÉSE',
@@ -1813,7 +1925,7 @@ class Overlay(QWidget):
             if ok:
                 self.sync_folders(value)
         elif action == 'rename_entry':
-            index = self.edit_index
+            index = next((i for i, entry in enumerate(self.history.items) if entry.get('_id') == self.edit_index), None)
             ok = index is not None and self.history.update_item(index, title=value)
             if ok and index == self.history_index:
                 self.display_history_item(index, show_window=False)
@@ -1826,21 +1938,15 @@ class Overlay(QWidget):
         else:
             self.history_notice('Nem sikerült menteni; ellenőrizd a nevet vagy a fájlhozzáférést.')
 
-    def move_selected(self):
+    def move_selected_to(self, folder):
         indexes = self.selected_indices()
-        if not indexes:
+        if not indexes or self.selected_folders():
             return
-        folder = self.move_folder.currentData() or ''
         if self.history.move_many(indexes, folder):
             self.refresh_history()
-            self.history_notice('Fordítás áthelyezve.')
+            self.history_notice(f'{len(indexes)} fordítás áthelyezve.')
         else:
-            self.history_notice('Mentési hiba.')
-
-    def ask_delete_folder(self):
-        folder = self.selected_folder()
-        if folder in self.history.folders:
-            self.ask_delete('folder', folder)
+            self.history_notice('Mentési hiba: a fordítások az eredeti helyükön maradtak.')
 
     def eventFilter(self, watched, event):
         if watched is self.handle:
@@ -1912,23 +2018,28 @@ class Overlay(QWidget):
     def _show_history_tooltip(self, item):
         if item is None or item.toolTip():
             return
-        idx = item.data(Qt.ItemDataRole.UserRole)
-        if isinstance(idx, int) and 0 <= idx < len(self.history.items):
+        idx = self.history_index_for_item(item)
+        if idx is not None:
             item.setToolTip(self.history_tooltip(self.history.items[idx]['text']))
 
     def refresh_history(self, *_):
         self._history_search_timer.stop()
-        previous = set(self.selected_indices())
+        previous = {item.data(Qt.ItemDataRole.UserRole) for item in self.history_list.selectedItems()}
         self.history_list.blockSignals(True)
         self.history_list.clear()
         term = self.history_search.text().casefold()
         folder_filter = self.selected_folder()
         count = 0
-        if not term and folder_filter == '':
+        cut_ids = {entry.get('_id') for entry in self._history_clipboard} if self._history_clipboard_cut else set()
+        if folder_filter == '':
             for name in self.history.folders:
+                if term and term not in name.casefold():
+                    continue
                 folder_item = QListWidgetItem(f'▸  {name}   •   mappa')
                 folder_item.setData(Qt.ItemDataRole.UserRole, ('folder', name))
                 self.history_list.addItem(folder_item)
+                if ('folder', name) in previous:
+                    folder_item.setSelected(True)
         for idx in range(len(self.history.items) - 1, -1, -1):
             entry = self.history.items[idx]
             folder = entry.get('folder', '')
@@ -1940,34 +2051,42 @@ class Overlay(QWidget):
             if term and not any(term in str(s).casefold() for s in (entry['text'], entry.get('time', ''), title, folder)):
                 continue
             item = QListWidgetItem(f'{title[:110]}\n{entry.get("time", "")}  •  {folder or "Rendezetlen"}')
-            item.setData(Qt.ItemDataRole.UserRole, idx)
+            identifier = self.history.record_id(entry)
+            item.setData(Qt.ItemDataRole.UserRole, identifier)
+            if identifier in cut_ids:
+                item.setForeground(QColor('#71839b'))
+                font = item.font()
+                font.setItalic(True)
+                item.setFont(font)
             self.history_list.addItem(item)
             count += 1
-            if idx in previous:
+            if identifier in previous:
                 item.setSelected(True)
-                if self.history_list.currentItem() is None:
-                    self.history_list.setCurrentItem(item)
         self.history_list.blockSignals(False)
-        self.count_label.setText(f'{count} / {len(self.history.items)}')
-        self.clear_button.setEnabled(bool(self.history.items))
+        self._history_visible_count = count
         self.on_selection_change()
 
     def history_notice(self, message):
         self.history_status.setText(message)
         self.history_status.show()
 
-    def ask_delete(self, kind, index=None):
+    def ask_delete(self, kind, targets=None):
         self.history_status.hide()
         self.cancel_edit()
-        self.pending_delete = (kind, index)
-        if kind == 'folder':
-            self.confirm_label.setText(f'Törlöd a(z) „{index}” mappát? A fordításai a Rendezetlen csoportba kerülnek.')
-        elif kind == 'many':
-            self.confirm_label.setText(f'Végleg törlöd a kijelölt {len(index)} fordítást?')
-        elif kind == 'one':
-            self.confirm_label.setText('Végleg törlöd a kijelölt fordítást?')
+        if kind == 'all':
+            indexes = list(range(len(self.history.items)))
+            folders = tuple(self.history.folders)
         else:
-            self.confirm_label.setText(f'Végleg törlöd mind a(z) {len(self.history.items)} fordítást?')
+            indexes, folders = targets
+        resolved = self.history.deletion_indexes(indexes, folders)
+        if resolved is None or not (resolved or folders):
+            self.history_notice('A kijelölt elemek már nem találhatók.')
+            return
+        identifiers = tuple(self.history.record_id(self.history.items[i]) for i in resolved)
+        self.pending_delete = (identifiers, tuple(folders))
+        self.confirm_label.setText(
+            f'Végleg törlöd a kijelölt {len(folders)} mappát és {len(identifiers)} fordítást? '
+            'A szám tartalmazza a kijelölt mappák összes fordítását is.')
         self.confirm_panel.show()
 
     def cancel_delete(self):
@@ -1975,16 +2094,14 @@ class Overlay(QWidget):
         self.confirm_panel.hide()
 
     def delete_selected_history(self):
-        indexes = self.selected_indices()
-        if len(indexes) == 1:
-            self.ask_delete('one', indexes[0])
-        elif indexes:
-            self.ask_delete('many', tuple(indexes))
+        indexes, folders = self.selected_indices(), self.selected_folders()
+        if indexes or folders:
+            self.ask_delete('selection', (indexes, folders))
         else:
-            self.history_notice('Először jelölj ki fordításokat.')
+            self.history_notice('Először jelölj ki fordításokat vagy mappákat.')
 
     def clear_history(self):
-        if self.history.items:
+        if self.history.items or self.history.folders:
             self.ask_delete('all')
 
     def confirm_delete(self):
@@ -1992,47 +2109,38 @@ class Overlay(QWidget):
         self.cancel_delete()
         if pending is None:
             return
-        kind, index = pending
-        if kind == 'folder':
-            if not self.history.delete_folder(index):
-                self.history_notice('Nem sikerült törölni a mappát.')
-                return
-            self.sync_folders('')
-            self.history_notice('A mappa törölve, a fordítások megmaradtak.')
-        elif kind == 'many':
-            if not self.history.delete_many(index):
-                self.history_notice('Mentési hiba: a fordítások nem törölhetők.')
-                return
-            if self.history_index is not None:
-                if self.history_index in index:
-                    self.history_index = None
-                    self.label.setPlainText('A megjelenített fordítást törölted az előzményekből.')
-                else:
-                    self.history_index -= sum(i < self.history_index for i in index)
-            self.history_notice(f'{len(index)} fordítás törölve.')
-        elif kind == 'one':
-            if index is None or not 0 <= index < len(self.history.items):
-                self.history_notice('A fordítás már nem található.')
-                return
-            if not self.history.delete(index):
-                self.history_notice('Mentési hiba: a fordítás nem törölhető.')
-                return
-            if self.history_index == index:
+        identifiers, folders = pending
+        lookup = {entry.get('_id'): i for i, entry in enumerate(self.history.items)}
+        if any(identifier not in lookup for identifier in identifiers):
+            self.history_notice('A kijelölés közben megváltozott. Jelöld ki újra a törlendő elemeket.')
+            return
+        indexes = self.history.deletion_indexes([lookup[x] for x in identifiers], folders)
+        if indexes is None:
+            self.history_notice('A kijelölt mappa már nem található.')
+            return
+        if {self.history.record_id(self.history.items[i]) for i in indexes} != set(identifiers):
+            # A background translation may have arrived in a selected folder.
+            # Confirm the new count before removing any additional records.
+            self.ask_delete('selection', (indexes, folders))
+            self.history_notice('Új fordítás érkezett a kijelölt mappába. Ellenőrizd a frissített darabszámot.')
+            return
+        if not self.history.delete_selection(indexes, folders):
+            self.history_notice('Mentési hiba: a kijelölt elemek nem törölhetők.')
+            return
+        if self.history_index is not None:
+            if self.history_index in indexes:
                 self.history_index = None
                 self.label.setPlainText('A megjelenített fordítást törölted az előzményekből.')
-            elif self.history_index is not None and self.history_index > index:
-                self.history_index -= 1
-            self.history_notice('Fordítás törölve.')
-        elif kind == 'all':
-            if not self.history.clear():
-                self.history_notice('Mentési hiba: az előzmények nem törölhetők.')
-                return
-            self.history_index = None
-            self.label.setPlainText('Az előzményeket törölted.')
-            self.history_notice('Összes előzmény törölve.')
-        self.refresh_history()
+            else:
+                self.history_index -= sum(i < self.history_index for i in indexes)
+        self.sync_folders()
+        self.history_notice(f'{len(folders)} mappa és {len(indexes)} fordítás törölve.')
 
     def open_selected_history(self):
+        folder = self.selected_folder_row()
+        if folder is not None:
+            self.open_history_folder(folder)
+            return
         index = self.selected_index()
         if index is not None:
             self.show_history_item(index)
@@ -2042,9 +2150,11 @@ class Overlay(QWidget):
         value = item.data(Qt.ItemDataRole.UserRole)
         if isinstance(value, tuple) and value[0] == 'folder':
             self.open_history_folder(value[1])
-        elif isinstance(value, int):
-            self.show_history_item(value)
-            self.set_history_open(False)
+        else:
+            index = self.history_index_for_item(item)
+            if index is not None:
+                self.show_history_item(index)
+                self.set_history_open(False)
 
     def update_history_button(self):
         general = not self.settings_panel.isHidden()
@@ -2766,5 +2876,6 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
