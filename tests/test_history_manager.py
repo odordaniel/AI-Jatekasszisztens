@@ -130,7 +130,7 @@ class HistoryManagerTests(unittest.TestCase):
         self.store.save_folders = lambda: False
         self.assertFalse(self.store.delete_selection([0], ['Játék']))
         self.assertEqual(self.store.items, previous)
-        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text()), previous)
+        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text(encoding='utf-8')), previous)
         restored = self.ns['HistoryStore']()
         self.assertEqual(restored.items, previous)
         self.assertEqual(restored.folders, ['Játék'])
@@ -152,7 +152,7 @@ class HistoryManagerTests(unittest.TestCase):
         restored = self.ns['HistoryStore']()
         self.assertFalse(restored.add('New entry'))
         self.assertFalse(restored.create_folder('New folder'))
-        self.assertEqual(journal.read_text(), '{broken')
+        self.assertEqual(journal.read_text(encoding='utf-8'), '{broken')
 
     def test_failed_rollback_can_recover_original_records_after_restart(self):
         previous = copy.deepcopy(self.store.items)
@@ -164,7 +164,7 @@ class HistoryManagerTests(unittest.TestCase):
         self.store.save = first_save_only
         self.store.save_folders = lambda: False
         self.assertFalse(self.store.delete_selection([], ['Játék']))
-        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text()), [])
+        self.assertEqual(json.loads(self.ns['HISTORY_PATH'].read_text(encoding='utf-8')), [])
         restored = self.ns['HistoryStore']()
         self.assertEqual(restored.items, previous)
         self.assertEqual(restored.folders, ['Játék'])
@@ -180,7 +180,7 @@ class HistoryManagerTests(unittest.TestCase):
                 backups = set(path.parent.glob(path.name + '.corrupt-*')) - previous
                 self.assertEqual(len(backups), 1)
                 self.assertEqual(backups.pop().read_bytes(), damaged)
-                self.assertEqual(json.loads(path.read_text())[0]['text'], 'New translation')
+                self.assertEqual(json.loads(path.read_text(encoding='utf-8'))[0]['text'], 'New translation')
 
     def test_damaged_folders_preserved_before_next_save(self):
         path = self.ns['FOLDERS_PATH']
