@@ -33,6 +33,8 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - Területkijelölés és FPS-fordítás után **csak a fordítás** jelenik meg, előzmények nem.
 - A legutóbbi **kézi** előzmény-nyitott/csukott állapot megmarad újranyitáskor. Automatikus fordítás miatti összecsukás ezt nem írhatja felül.
 - A fordítási, előzményes és beállításnézet külön méretet tárol; az ablak pozíciója is mentett.
+- A képernyő- és hangbeállítások közös beállításnézet-méretet használnak. A kettő közötti váltás (navigáció, fogaskerék vagy Vissza) nem módosíthatja az aktuális méretet vagy pozíciót. A régi külön hangbeállítás-méretet betöltéskor figyelmen kívül hagyjuk.
+- A beállításlapok közös stílusa és kártya-/mezőelemei a `src/settings_ui.py` modulban találhatók. A lapok tartalma görgethető, a mentés és visszalépés gombjai kívül maradnak a görgethető területen.
 - A „kilépés” gyorsbillentyű a látható ablakot rejti el, kijelölés közben megszakít, **nem zárja be** a tálcán futó programot. Teljes kilépés a tálcamenüből.
 - Gyorsbillentyűk szabadon rögzíthetők, Mouse3 (görgő), Mouse4, Mouse5 támogatott; játékbeli gombnyomást a hook nem nyeli el.
 - Előzmények kereshetők, jobb kattintásos menüből kezelhetők, Ctrl/Shift többes kijelöléssel másolhatók, mozgathatók, átnevezhetők és törölhetők; a törlési megerősítés ugyanabban az ablakban marad.
@@ -74,3 +76,4 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
