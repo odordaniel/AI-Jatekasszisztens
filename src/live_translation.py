@@ -1112,10 +1112,13 @@ class LiveTranslationSettings(QWidget):
             chunks = []
             for entry in entries:
                 lines = [f"[{entry['time']}] {entry.get('speaker', '')}"]
-                if self.cfg.get('show_original', False) and entry.get('original'):
+                # Presentation settings must never discard the source transcript.
+                if entry.get('original'):
                     lines.append(str(entry['original']))
                 if entry.get('magyar'):
                     lines.append(str(entry['magyar']))
+                if entry.get('error'):
+                    lines.append('Fordítás nem sikerült: ' + str(entry['error']))
                 chunks.append('\n'.join(lines))
             body = 'Hangfordítás – ' + started + '\n\n' + '\n\n'.join(chunks)
             saved = self.on_history(body, (self.worker.inferred_game if self.worker else ''))
@@ -1163,3 +1166,4 @@ class LiveTranslationSettings(QWidget):
         # Closing settings MUST NOT stop an active background translation.
         self.save_settings()
         event.accept()
+

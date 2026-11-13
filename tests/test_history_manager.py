@@ -8,6 +8,7 @@ import threading
 import unittest
 from pathlib import Path
 from datetime import datetime
+from unittest.mock import patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src' / 'assistant.py'
 TREE = ast.parse(SOURCE.read_text(encoding='utf-8'))
@@ -70,6 +71,56 @@ class HistoryManagerTests(unittest.TestCase):
         self.assertIn("('Ctrl+V', self.paste_history)", text)
         self.assertIn("('Delete', self.delete_selected_history)", text)
 
+    def test_damaged_history_preserved_before_next_save(self):
+        path = self.ns['HISTORY_PATH']
+        for damaged in (b'[{"text":"recoverable translation"},', b'\xff', b'{"unexpected":"object"}'):
+            with self.subTest(damaged=damaged):
+                path.write_bytes(damaged)
+                previous = set(path.parent.glob(path.name + '.corrupt-*'))
+                store = self.ns['HistoryStore']()
+                self.assertTrue(store.add('New translation'))
+                backups = set(path.parent.glob(path.name + '.corrupt-*')) - previous
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups.pop().read_bytes(), damaged)
+                self.assertEqual(json.loads(path.read_text())[0]['text'], 'New translation')
+
+    def test_damaged_folders_preserved_before_next_save(self):
+        path = self.ns['FOLDERS_PATH']
+        damaged = b'["Old game",'
+        path.write_bytes(damaged)
+        store = self.ns['HistoryStore']()
+        self.assertTrue(store.create_folder('New game'))
+        backups = list(path.parent.glob(path.name + '.corrupt-*'))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), damaged)
+
+    def test_backup_failure_blocks_overwrite_and_rolls_back_changes(self):
+        original_open = Path.open
+        def fail_backup(path, mode='r', *args, **kwargs):
+            if mode == 'xb':
+                raise PermissionError('Backup unavailable')
+            return original_open(path, mode, *args, **kwargs)
+        for key in ('HISTORY_PATH', 'FOLDERS_PATH'):
+            with self.subTest(file=key):
+                path = self.ns[key]
+                damaged = b'["recoverable data",'
+                path.write_bytes(damaged)
+                with patch.object(Path, 'open', fail_backup):
+                    store = self.ns['HistoryStore']()
+                if key == 'HISTORY_PATH':
+                    self.assertFalse(store.add('New translation'))
+                    self.assertEqual(store.items, [])
+                else:
+                    self.assertFalse(store.create_folder('New game'))
+                    self.assertEqual(store.folders, [])
+                self.assertEqual(path.read_bytes(), damaged)
+
+    def test_valid_history_does_not_create_corruption_backup(self):
+        store = self.ns['HistoryStore']()
+        self.assertEqual(len(store.items), 4)
+        self.assertEqual(list(self.ns['HISTORY_PATH'].parent.glob('*.corrupt-*')), [])
+
 
 if __name__ == '__main__':
     unittest.main()
+
