@@ -1,0 +1,65 @@
+name: Hibabejelentés
+description: Hibás működés vagy sikertelen build bejelentése.
+title: "[Hiba]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Köszönjük a visszajelzést! Biztonsági sérülékenységnél a [SECURITY.md](https://github.com/odordaniel/AI-Jatekasszisztens/blob/main/SECURITY.md) útmutatását kövesd. API-kulcsot, privát végpontot vagy személyes fordítási előzményt ne másolj ide.
+  - type: input
+    id: version
+    attributes:
+      label: Alkalmazásverzió
+      description: A beállításokban látható verzió; forrásból futtatásnál a commit vagy ág is segít.
+      placeholder: Például v2.0.0, portable kiadás
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Érintett terület
+      options:
+        - Képernyőfordítás vagy területkijelölés
+        - Hangfelvétel, átírás vagy hangfordítás
+        - Előzmények és mappakezelés
+        - Beállítások vagy ablakméretezés
+        - Gyorsbillentyűk vagy tálcaikon
+        - Telepítés, indítás vagy build
+        - Egyéb
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Környezet
+      description: Windows-verzió/build, portable vagy forrásból futtatott változat. Kijelzőhibánál DPI/nagyítás és monitorok; hanghibánál hangkimenet; API-hibánál szolgáltató és modell neve is segít. Titkokat ne adj meg.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reprodukálás lépései
+      placeholder: |
+        1. Megnyitottam…
+        2. Kiválasztottam…
+        3. Ez történt…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Elvárt működés
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Tényleges működés
+      description: Írd le a hibát és a pontos hibaüzenetet, ha van.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: További információ vagy kitakart naplórészlet
+      description: Opcionális. Buildhibánál a sikertelen Actions-futás linkje vagy a releváns naplórészlet segít. Csak szükséges, átnézett részletet küldj; képernyőkép nem kötelező.

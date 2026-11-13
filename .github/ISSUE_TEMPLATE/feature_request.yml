@@ -1,0 +1,28 @@
+name: Funkciójavaslat
+description: Új funkció vagy egy meglévő munkafolyamat javításának javaslata.
+title: "[Javaslat]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Milyen problémát szeretnél megoldani?
+      description: Írd le a használati helyzetet és azt, mi nehéz a jelenlegi működésben.
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Javasolt működés
+      description: Mit csináljon az alkalmazás, és ez hogyan segítene?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Más megoldások vagy kerülőút
+      description: Opcionális. Van jelenleg használható alternatíva?
+  - type: textarea
+    id: context
+    attributes:
+      label: További körülmények
+      description: Opcionális. Érintett nézet, beviteli mód vagy játéktípus. API-kulcsot és személyes adatot ne ossz meg.

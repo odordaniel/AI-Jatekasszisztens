@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Biztonsági sérülékenység
+    url: https://github.com/odordaniel/AI-Jatekasszisztens/security/policy
+    about: Bizalmas biztonsági ügyben a Security Policy bejelentési útmutatását kövesd.
+  - name: Közösségi magatartási ügy
+    url: https://github.com/odordaniel/AI-Jatekasszisztens/blob/main/CODE_OF_CONDUCT.md
+    about: Magatartási probléma és privát kapcsolattartás kérése a kódex szerint.
