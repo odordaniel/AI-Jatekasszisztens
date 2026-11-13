@@ -86,7 +86,14 @@ A gyorsbillentyűk a beállításokban módosíthatók.
 
 ### 3. Fordítások kezelése
 
-A korábban elkészült kép- és hangfordítások az előzmények között visszakereshetők. A listában `Ctrl`/`Shift` segítségével több elemet jelölhetsz ki; jobb kattintással vagy a `Ctrl+C`, `Ctrl+V`, `F2`, `Delete` billentyűkkel másolhatsz, beilleszthetsz, átnevezhetsz és törölhetsz. Új mappát is létrehozhatsz, elemeket áthelyezhetsz. Ezek a műveletek az alkalmazás mentett fordításaira vonatkoznak, nem a Windows fájlrendszerére.
+A korábban elkészült kép- és hangfordítások az előzmények között visszakereshetők. A műveletek a lista jobb klikkes menüjében találhatók: megnyitás, kivágás, másolás, beillesztés, áthelyezés, átnevezés, törlés és új mappa. A mappaválasztóval vagy egy mappa dupla kattintásával válthatsz helyet; a lista üres részére jobb kattintva az aktuális hely menüje nyílik meg.
+
+- `Ctrl+X`: a kijelölt fordítások kivágása; `Ctrl+C`: másolás; `Ctrl+V`: beillesztés az aktuális helyre. Mappa jobb klikkes Beillesztés parancsával közvetlenül abba a mappába helyezhetsz elemeket.
+- A kivágott elemek halványan jelennek meg, és csak sikeres beillesztéskor kerülnek át a célhoz. `Esc`: a kivágás megszakítása.
+- `Ctrl`/`Shift`: több elem kijelölése; `Ctrl+A`: összes látható elem; `Delete`: a teljes kijelölés törlése, mappák és fordítások vegyesen is. **A törölt mappák tartalma is törlődik**, megerősítés után.
+- `F2`: egy elem átnevezése; `Ctrl+Shift+N`: új mappa; `F5`: lista frissítése. Név megadásakor `Enter`: mentés, `Esc`: mégse.
+
+Ezek a műveletek az alkalmazás mentett fordításaira vonatkoznak, nem a Windows fájlrendszerére.
 
 ### 4. Beállítások
 
@@ -181,4 +188,5 @@ python -m py_compile src/assistant.py src/live_translation.py
 A GitHub Actions a teszteket a portable EXE készítése előtt futtatja.
 A tesztek a kritikus tiszta logikát fedik le; a tényleges képernyőkijelölést,
 hangrögzítést és Windows felületet továbbra is Windows 11-en kell ellenőrizni.
+
 
