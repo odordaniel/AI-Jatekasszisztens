@@ -548,6 +548,8 @@ class HistoryStore:
     def __init__(self):
         self.items = []
         self.folders = []
+        self.folder_parents = {}
+        self.folder_titles = {}
         self._history_writable = True
         self._folders_writable = True
         with _STORAGE_LOCK:
@@ -565,6 +567,10 @@ class HistoryStore:
             if not isinstance(previous.get('items'), list) or not isinstance(previous.get('folders'), list):
                 return False
             self.items, self.folders = previous['items'], previous['folders']
+            self.folder_parents = previous.get('folder_parents', {})
+            self.folder_titles = previous.get('folder_titles', {})
+            if not isinstance(self.folder_parents, dict) or not isinstance(self.folder_titles, dict):
+                return False
             if not self.save() or not self.save_folders():
                 return False
             journal.unlink()
@@ -590,11 +596,37 @@ class HistoryStore:
         if FOLDERS_PATH.exists():
             try:
                 loaded_folders = json.loads(FOLDERS_PATH.read_text(encoding='utf-8'))
-                if not isinstance(loaded_folders, list):
-                    raise ValueError('A mappafájl gyökéreleme nem lista.')
                 if isinstance(loaded_folders, list):
-                    self.folders = [x for x in loaded_folders if isinstance(x, str) and x.strip()]
-                    self.folders = list(dict.fromkeys(self.folders))
+                    # Legacy root-folder names remain valid, opaque identifiers.
+                    self.folders = list(dict.fromkeys(x for x in loaded_folders if isinstance(x, str) and x.strip()))
+                elif isinstance(loaded_folders, dict) and loaded_folders.get('version') == 2:
+                    entries = loaded_folders.get('folders')
+                    if not isinstance(entries, list):
+                        raise ValueError('Érvénytelen mappaszerkezet.')
+                    ids, parents, titles = [], {}, {}
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            raise ValueError('Érvénytelen mappabejegyzés.')
+                        key, title, parent = entry.get('id'), entry.get('name'), entry.get('parent', '')
+                        if (not isinstance(key, str) or not key or key in ids or
+                                not isinstance(title, str) or not title.strip() or not isinstance(parent, str)):
+                            raise ValueError('Érvénytelen mappaazonosító vagy név.')
+                        ids.append(key)
+                        if parent:
+                            parents[key] = parent
+                        if title != key:
+                            titles[key] = title
+                    for key in ids:
+                        visited = {key}
+                        parent = parents.get(key, '')
+                        while parent:
+                            if parent not in ids or parent in visited:
+                                raise ValueError('Hiányzó szülőmappa vagy körkörös mappaszerkezet.')
+                            visited.add(parent)
+                            parent = parents.get(parent, '')
+                    self.folders, self.folder_parents, self.folder_titles = ids, parents, titles
+                else:
+                    raise ValueError('Nem támogatott mappaformátum.')
             except (OSError, ValueError) as exc:
                 logging.warning('Mappák betöltési hiba: %s', type(exc).__name__)
                 self._folders_writable = self._folders_writable and self._preserve_unreadable_file(FOLDERS_PATH)
@@ -615,51 +647,120 @@ class HistoryStore:
                 return False
             try:
                 tmp = FOLDERS_PATH.with_suffix('.json.tmp')
-                tmp.write_text(json.dumps(self.folders, ensure_ascii=False, indent=2), encoding='utf-8')
+                tmp.write_text(json.dumps(self.folder_payload(), ensure_ascii=False, indent=2), encoding='utf-8')
                 tmp.replace(FOLDERS_PATH)
                 return True
             except (OSError, TypeError, ValueError) as exc:
                 logging.warning('Mappák mentési hiba: %s', type(exc).__name__)
                 return False
 
-    def create_folder(self, name):
+    def folder_title(self, key):
+        return self.folder_titles.get(key, key)
+
+    def folder_path(self, key):
+        parts, visited = [], set()
+        while key and key not in visited:
+            visited.add(key)
+            parts.append(self.folder_title(key))
+            key = self.folder_parents.get(key, '')
+        return ' / '.join(reversed(parts))
+
+    def child_folders(self, parent=''):
+        return [key for key in self.folders if self.folder_parents.get(key, '') == parent]
+
+    def find_folder(self, title, parent=''):
+        return next((key for key in self.child_folders(parent)
+                     if self.folder_title(key).casefold() == title.casefold()), None)
+
+    def descendant_folders(self, folders):
+        result = set(folders)
+        pending = list(result)
+        while pending:
+            for child in self.child_folders(pending.pop()):
+                if child not in result:
+                    result.add(child)
+                    pending.append(child)
+        return result
+
+    def folder_counts(self):
+        counts = dict.fromkeys(self.folders, 0)
+        for entry in self.items:
+            key, visited = entry.get('folder', ''), set()
+            while key in counts and key not in visited:
+                counts[key] += 1
+                visited.add(key)
+                key = self.folder_parents.get(key, '')
+        return counts
+
+    def folder_payload(self):
+        if not self.folder_parents and not self.folder_titles:
+            return self.folders
+        return {'version': 2, 'folders': [
+            {'id': key, 'name': self.folder_title(key), 'parent': self.folder_parents.get(key, '')}
+            for key in self.folders]}
+
+    def create_folder(self, name, parent=''):
         name = name.strip()
-        if not name or len(name) > 80 or name.casefold() == 'összes' or any(x.casefold() == name.casefold() for x in self.folders):
+        if (not name or len(name) > 80 or name.casefold() in ('összes', '__unsorted__') or
+                (parent and parent not in self.folders) or self.find_folder(name, parent) is not None):
             return False
-        self.folders.append(name)
+        from uuid import uuid4
+        key = 'folder-' + uuid4().hex if parent else name
+        if key in self.folders:
+            return False
+        self.folders.append(key)
+        if parent:
+            self.folder_parents[key] = parent
+            self.folder_titles[key] = name
         if not self.save_folders():
-            self.folders.pop()
+            self.folders.remove(key)
+            self.folder_parents.pop(key, None)
+            self.folder_titles.pop(key, None)
             return False
         return True
 
     def rename_folder(self, old, new):
         new = new.strip()
-        if old not in self.folders or not new or len(new) > 80 or new.casefold() == 'összes':
+        if old not in self.folders or not new or len(new) > 80 or new.casefold() in ('összes', '__unsorted__'):
             return False
-        if any(x.casefold() == new.casefold() for x in self.folders if x != old):
+        parent = self.folder_parents.get(old, '')
+        matched = self.find_folder(new, parent)
+        if matched is not None and matched != old:
+            return False
+        key = old if parent else new
+        if key != old and key in self.folders:
             return False
         original = [dict(x) for x in self.items]
-        self.items = [dict(x, folder=new) if x.get('folder') == old else x for x in self.items]
-        pos = self.folders.index(old)
-        self.folders[pos] = new
+        old_folders, old_parents, old_titles = list(self.folders), dict(self.folder_parents), dict(self.folder_titles)
+        if parent:
+            self.folder_titles[old] = new
+        else:
+            self.items = [dict(x, folder=key) if x.get('folder') == old else x for x in self.items]
+            self.folders[self.folders.index(old)] = key
+            self.folder_parents = {child: key if value == old else value for child, value in self.folder_parents.items()}
+            self.folder_titles.pop(old, None)
         if not self.save() or not self.save_folders():
-            self.items = original
-            self.folders[pos] = old
+            self.items, self.folders = original, old_folders
+            self.folder_parents, self.folder_titles = old_parents, old_titles
             self.save()
             self.save_folders()
             return False
         return True
 
     def delete_folder(self, name):
-        # Folder deletion never deletes its translations; they move to 'Unsorted'.
+        # Compatibility helper: remove a folder tree but preserve its records.
         if name not in self.folders:
             return False
+        names = self.descendant_folders([name])
         original = [dict(x) for x in self.items]
-        self.items = [dict(x, folder='') if x.get('folder') == name else x for x in self.items]
-        self.folders.remove(name)
+        old_folders, old_parents, old_titles = list(self.folders), dict(self.folder_parents), dict(self.folder_titles)
+        self.items = [dict(x, folder='') if x.get('folder') in names else x for x in self.items]
+        self.folders = [key for key in self.folders if key not in names]
+        self.folder_parents = {key: value for key, value in self.folder_parents.items() if key not in names}
+        self.folder_titles = {key: value for key, value in self.folder_titles.items() if key not in names}
         if not self.save() or not self.save_folders():
-            self.items = original
-            self.folders.append(name)
+            self.items, self.folders = original, old_folders
+            self.folder_parents, self.folder_titles = old_parents, old_titles
             self.save()
             self.save_folders()
             return False
@@ -683,7 +784,7 @@ class HistoryStore:
         if game:
             # "Játék mappája" = a beépített előzménykezelő játéknevű mappája,
             # NOT the game's installation directory.
-            matched = next((folder for folder in self.folders if folder.casefold() == game.casefold()), None)
+            matched = self.find_folder(game)
             if matched is None:
                 if not self.create_folder(game):
                     # Never silently file a recognized game under Unsorted.
@@ -747,6 +848,7 @@ class HistoryStore:
         if (any(not isinstance(i, int) or not 0 <= i < len(self.items) for i in selected)
                 or not folder_names.issubset(self.folders)):
             return None
+        folder_names = self.descendant_folders(folder_names)
         selected.update(i for i, entry in enumerate(self.items) if entry.get('folder', '') in folder_names)
         return sorted(selected)
 
@@ -754,12 +856,13 @@ class HistoryStore:
         """Delete the union of selected records and selected folder contents."""
         with _STORAGE_LOCK:
             selected = self.deletion_indexes(indexes, folders)
-            names = set(folders)
+            names = self.descendant_folders(folders)
             if selected is None or not (selected or names):
                 return False
             if not self._history_writable or (names and not self._folders_writable):
                 return False
             old_items, old_folders = self.items, self.folders
+            old_parents, old_titles = dict(self.folder_parents), dict(self.folder_titles)
             journal = HISTORY_PATH.with_suffix('.delete-pending.json')
             if names:
                 try:
@@ -768,7 +871,8 @@ class HistoryStore:
                     if journal.exists():
                         return False
                     temporary = journal.with_suffix('.tmp')
-                    temporary.write_text(json.dumps({'items': old_items, 'folders': old_folders},
+                    temporary.write_text(json.dumps({'items': old_items, 'folders': old_folders,
+                                                     'folder_parents': old_parents, 'folder_titles': old_titles},
                                                     ensure_ascii=False), encoding='utf-8')
                     temporary.replace(journal)
                 except (OSError, TypeError, ValueError):
@@ -776,6 +880,8 @@ class HistoryStore:
             removed = set(selected)
             self.items = [x for i, x in enumerate(self.items) if i not in removed]
             self.folders = [x for x in self.folders if x not in names]
+            self.folder_parents = {key: value for key, value in self.folder_parents.items() if key not in names}
+            self.folder_titles = {key: value for key, value in self.folder_titles.items() if key not in names}
             committed = self.save() and (not names or self.save_folders())
             if committed and names:
                 try:
@@ -784,6 +890,7 @@ class HistoryStore:
                     committed = False
             if not committed:
                 self.items, self.folders = old_items, old_folders
+                self.folder_parents, self.folder_titles = old_parents, old_titles
                 restored = self.save() and (not names or self.save_folders())
                 if restored and names:
                     try:
@@ -950,7 +1057,6 @@ class Overlay(QWidget):
         self.audio_recorder_toggle = None
         self._audio_return_mode = 'compact'
         self.audio_settings_panel = None
-        self._history_nofocus = False
 
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint |
                             Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)
@@ -1180,6 +1286,8 @@ class Overlay(QWidget):
         self.history_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.history_list.setToolTip('Dupla kattintás: megnyitás • Ctrl/Shift: többes kijelölés • Jobb kattintás: műveletek')
         self.history_list.itemDoubleClicked.connect(self.select_history)
+        self.history_list.itemClicked.connect(self.preview_history_item)
+        self.history_list.currentItemChanged.connect(self.preview_history_item)
         # Formatting every long transcript during each refresh is costly.
         # Generate the identical tooltip on demand when a row is hovered.
         self.history_list.setMouseTracking(True)
@@ -1199,6 +1307,7 @@ class Overlay(QWidget):
                             ('Ctrl+A', self.history_list.selectAll),
                             ('Ctrl+Shift+N', lambda: self.begin_edit('new_folder')),
                             ('F5', self.refresh_history),
+                            ('Alt+Up', self.open_parent_folder),
                             ('Escape', self.cancel_history_clipboard)):
             shortcut = QShortcut(QKeySequence(key), self.history_list)
             shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -1823,12 +1932,14 @@ class Overlay(QWidget):
             menu.addAction('Másolás (Ctrl+C)', self.copy_selected_history)
             move_menu = menu.addMenu('Áthelyezés ide')
             for name in ('', *self.history.folders):
-                move_menu.addAction(name or 'Rendezetlen', lambda checked=False, f=name: self.move_selected_to(f))
+                move_menu.addAction(self.history.folder_path(name) if name else 'Rendezetlen', lambda checked=False, f=name: self.move_selected_to(f))
         menu.addAction('Beillesztés (Ctrl+V)', lambda: self.paste_history(destination)).setEnabled(bool(self._history_clipboard))
         if count:
             menu.addAction('Törlés (Delete)', self.delete_selected_history)
         menu.addSeparator()
-        menu.addAction('Új mappa (Ctrl+Shift+N)', lambda: self.begin_edit('new_folder'))
+        menu.addAction('Új mappa (Ctrl+Shift+N)', lambda: self.begin_edit('new_folder', destination))
+        if self.selected_folder():
+            menu.addAction('Szülőmappa (Alt+Fel)', self.open_parent_folder)
         menu.addAction('Összes kijelölése (Ctrl+A)', self.history_list.selectAll).setEnabled(self.history_list.count() > 0)
         menu.addAction('Frissítés (F5)', self.refresh_history)
         menu.addSeparator()
@@ -1854,6 +1965,10 @@ class Overlay(QWidget):
     def open_history_folder(self, folder):
         self.folder_filter.setCurrentIndex(max(0, self.folder_filter.findData(folder)))
 
+    def open_parent_folder(self):
+        current = self.selected_folder()
+        self.open_history_folder(self.history.folder_parents.get(current, ''))
+
     def selected_index(self):
         indexes = self.selected_indices()
         current = self.history_index_for_item(self.history_list.currentItem())
@@ -1862,6 +1977,15 @@ class Overlay(QWidget):
     def selected_folder(self):
         return self.folder_filter.currentData() or ''
 
+    def update_folder_captions(self, counts=None):
+        counts = self.history.folder_counts() if counts is None else counts
+        self.folder_filter.blockSignals(True)
+        for index in range(self.folder_filter.count()):
+            key = self.folder_filter.itemData(index)
+            if key in self.history.folders:
+                self.folder_filter.setItemText(index, f'{self.history.folder_path(key)}  ·  {counts[key]} fordítás')
+        self.folder_filter.blockSignals(False)
+
     def sync_folders(self, selected=None):
         if selected is None and hasattr(self, 'folder_filter'):
             selected = self.selected_folder()
@@ -1869,10 +1993,10 @@ class Overlay(QWidget):
         self.folder_filter.clear()
         self.folder_filter.addItem('Összes mappa', '')
         self.folder_filter.addItem('Rendezetlen', '__unsorted__')
-        for name in self.history.folders:
-            self.folder_filter.addItem(name, name)
-        i = self.folder_filter.findData(selected)
-        self.folder_filter.setCurrentIndex(max(0, i))
+        for key in self.history.folders:
+            self.folder_filter.addItem(self.history.folder_path(key), key)
+        index = self.folder_filter.findData(selected)
+        self.folder_filter.setCurrentIndex(max(0, index))
         self.folder_filter.blockSignals(False)
         self.refresh_history()
 
@@ -1894,11 +2018,12 @@ class Overlay(QWidget):
         self.edit_action = action
         self.edit_index = self.history.record_id(self.history.items[index]) if index is not None else None
         self.edit_folder = folder
+        self.edit_parent = folder if folder in self.history.folders else ''
         self.edit_label.setText({
             'new_folder': 'ÚJ MAPPA', 'rename_folder': 'MAPPA ÁTNEVEZÉSE',
             'rename_entry': 'MENTETT FORDÍTÁS ÁTNEVEZÉSE'}[action])
         old = (self.history.items[index].get('title') or
-               self.history.items[index]['text'].splitlines()[0][:80]) if action == 'rename_entry' else (folder if action == 'rename_folder' else '')
+               self.history.items[index]['text'].splitlines()[0][:80]) if action == 'rename_entry' else (self.history.folder_title(folder) if action == 'rename_folder' else '')
         self.edit_input.setText(old)
         self.edit_panel.show()
         self.edit_input.setFocus()
@@ -1917,13 +2042,14 @@ class Overlay(QWidget):
             self.history_notice('Adj meg egy nevet.')
             return
         if action == 'new_folder':
-            ok = self.history.create_folder(value)
+            ok = self.history.create_folder(value, self.edit_parent)
             if ok:
-                self.sync_folders(value)
+                self.sync_folders(self.history.find_folder(value, self.edit_parent))
         elif action == 'rename_folder':
+            renamed = self.edit_folder if self.history.folder_parents.get(self.edit_folder) else value
             ok = self.history.rename_folder(self.edit_folder, value)
             if ok:
-                self.sync_folders(value)
+                self.sync_folders(renamed)
         elif action == 'rename_entry':
             index = next((i for i, entry in enumerate(self.history.items) if entry.get('_id') == self.edit_index), None)
             ok = index is not None and self.history.update_item(index, title=value)
@@ -1970,6 +2096,11 @@ class Overlay(QWidget):
             index = len(self.history.items) - 1
         index = max(0, min(len(self.history.items) - 1, index + step))
         self.show_history_item(index)
+
+    def preview_history_item(self, item, *_):
+        index = self.history_index_for_item(item)
+        if index is not None:
+            self.display_history_item(index, show_window=False)
 
     def display_history_item(self, index, show_window=True):
         if self._audio_result_open:
@@ -2031,26 +2162,35 @@ class Overlay(QWidget):
         folder_filter = self.selected_folder()
         count = 0
         cut_ids = {entry.get('_id') for entry in self._history_clipboard} if self._history_clipboard_cut else set()
-        if folder_filter == '':
-            for name in self.history.folders:
-                if term and term not in name.casefold():
-                    continue
-                folder_item = QListWidgetItem(f'▸  {name}   •   mappa')
-                folder_item.setData(Qt.ItemDataRole.UserRole, ('folder', name))
-                self.history_list.addItem(folder_item)
-                if ('folder', name) in previous:
-                    folder_item.setSelected(True)
+        counts = self.history.folder_counts()
+        self.update_folder_captions(counts)
+        visible_folders = self.history.child_folders(folder_filter)
+        if term and folder_filter != '__unsorted__':
+            scope = self.history.descendant_folders([folder_filter]) if folder_filter else set(self.history.folders)
+            visible_folders = [key for key in self.history.folders if key in scope and key != folder_filter]
+        for key in visible_folders:
+            path = self.history.folder_path(key)
+            if term and term not in path.casefold():
+                continue
+            caption = path if term else self.history.folder_title(key)
+            folder_item = QListWidgetItem(f'▸  {caption}   •   {counts[key]} fordítás')
+            folder_item.setToolTip(path + '\nA darabszám az almappák fordításait is tartalmazza.')
+            folder_item.setData(Qt.ItemDataRole.UserRole, ('folder', key))
+            self.history_list.addItem(folder_item)
+            if ('folder', key) in previous:
+                folder_item.setSelected(True)
+        scope = self.history.descendant_folders([folder_filter]) if term and folder_filter in self.history.folders else {folder_filter}
         for idx in range(len(self.history.items) - 1, -1, -1):
             entry = self.history.items[idx]
             folder = entry.get('folder', '')
             if folder_filter == '__unsorted__' and folder:
                 continue
-            if folder_filter not in ('', '__unsorted__') and folder != folder_filter:
+            if folder_filter not in ('', '__unsorted__') and folder not in scope:
                 continue
             title = entry.get('title') or entry['text'].replace('\n', ' ')[:100]
-            if term and not any(term in str(s).casefold() for s in (entry['text'], entry.get('time', ''), title, folder)):
+            if term and not any(term in str(s).casefold() for s in (entry['text'], entry.get('time', ''), title, self.history.folder_path(folder))):
                 continue
-            item = QListWidgetItem(f'{title[:110]}\n{entry.get("time", "")}  •  {folder or "Rendezetlen"}')
+            item = QListWidgetItem(f'{title[:110]}\n{entry.get("time", "")}  •  {self.history.folder_path(folder) if folder else "Rendezetlen"}')
             identifier = self.history.record_id(entry)
             item.setData(Qt.ItemDataRole.UserRole, identifier)
             if identifier in cut_ids:
@@ -2083,7 +2223,9 @@ class Overlay(QWidget):
             self.history_notice('A kijelölt elemek már nem találhatók.')
             return
         identifiers = tuple(self.history.record_id(self.history.items[i]) for i in resolved)
-        self.pending_delete = (identifiers, tuple(folders))
+        expanded = self.history.descendant_folders(folders)
+        folders = tuple(key for key in self.history.folders if key in expanded)
+        self.pending_delete = (identifiers, folders)
         self.confirm_label.setText(
             f'Végleg törlöd a kijelölt {len(folders)} mappát és {len(identifiers)} fordítást? '
             'A szám tartalmazza a kijelölt mappák összes fordítását is.')
@@ -2118,7 +2260,8 @@ class Overlay(QWidget):
         if indexes is None:
             self.history_notice('A kijelölt mappa már nem található.')
             return
-        if {self.history.record_id(self.history.items[i]) for i in indexes} != set(identifiers):
+        if (self.history.descendant_folders(folders) != set(folders) or
+                {self.history.record_id(self.history.items[i]) for i in indexes} != set(identifiers)):
             # A background translation may have arrived in a selected folder.
             # Confirm the new count before removing any additional records.
             self.ask_delete('selection', (indexes, folders))
@@ -2185,7 +2328,7 @@ class Overlay(QWidget):
             self._history_preference = bool(should_open)
         if should_open == was_open:
             if should_open and focus:
-                self.history_search.setFocus()
+                self.focus_history()
             self.update_history_button()
             if remember:
                 self.geometry_timer.start()
@@ -2198,7 +2341,7 @@ class Overlay(QWidget):
                 self.history_panel.show()
                 self.resize(self._history_size)
                 if focus:
-                    self.history_search.setFocus()
+                    self.focus_history()
             else:
                 self._history_size = self.size()
                 self.cancel_delete()
@@ -2219,39 +2362,25 @@ class Overlay(QWidget):
         self.set_history_open(self.history_panel.isHidden(), focus=True)
 
 
-    def nativeEvent(self, event_type, message):
-        if os.name == 'nt' and not self.history_panel.isHidden() and self.settings_panel.isHidden() and self.audio_settings_scroll.isHidden():
-            try:
-                import ctypes
-                from ctypes import wintypes
-                msg = wintypes.MSG.from_address(int(message))
-                if msg.message == 0x0021:  # WM_MOUSEACTIVATE
-                    # Text editing needs keyboard focus. Other history clicks do not.
-                    cursor = self.mapFromGlobal(QCursor.pos())
-                    child = self.childAt(cursor)
-                    if not isinstance(child, (QLineEdit, QComboBox)):
-                        return True, 3  # MA_NOACTIVATE
-            except (ValueError, TypeError, OSError):
-                pass
-        return super().nativeEvent(event_type, message)
+    def focus_history(self):
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        from window_focus import activate_window
+        if activate_window(int(self.winId())):
+            QCursor.setPos(self.history_list.viewport().mapToGlobal(self.history_list.viewport().rect().center()))
+        self.history_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
 
     def show_history_from_hotkey(self):
         if not self.audio_settings_scroll.isHidden():
             self.close_audio_settings()
-        # Restore the user's last explicit history choice. Merely opening the
-        # window must never turn a collapsed history panel back on.
-        preferred = self._history_preference
         if not self.settings_panel.isHidden():
-            self._history_before_settings = preferred
+            self._history_before_settings = True
             self.close_settings()
         if not self.label.toPlainText().strip():
             self.label.setPlainText('Válassz egy korábbi fordítást az alábbi listából.')
-        self.set_history_open(preferred, focus=False, remember=False)
-        # Avoid stealing game focus merely by displaying history. Mouse input
-        # is handled without activation on Windows; explicit text entry may focus.
-        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
-        self.show()
-        self.raise_()
+        self.set_history_open(True, focus=True)
 
     def prepare_translation(self):
         if self._audio_result_open:
@@ -2876,6 +3005,7 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
 

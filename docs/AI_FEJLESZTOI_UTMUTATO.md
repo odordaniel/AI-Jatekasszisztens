@@ -31,7 +31,9 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - Induláskor csak tálcaikon, **nincs konzol vagy automatikus felugró ablak**.
 - Jobb kattintásos tálcamenü: területkijelölés, FPS-középső kivágás, előzmények, beállítások, autostart, teljes kilépés.
 - Területkijelölés és FPS-fordítás után **csak a fordítás** jelenik meg, előzmények nem.
-- A legutóbbi **kézi** előzmény-nyitott/csukott állapot megmarad újranyitáskor. Automatikus fordítás miatti összecsukás ezt nem írhatja felül.
+- A kézi előzmény-nyitott/csukott állapot mentett marad. Az explicit Előzmények parancs (gyorsbillentyű vagy tálcamenü) megnyitja a listát és aktiválást kér; az automatikus fordítás miatti összecsukás nem írja át a kézi állapotot.
+- Az előzmények kézi megnyitásakor a program átveszi a fókuszt. A `src/window_focus.py` Windows alatt előtérbe aktiválja az ablakot, majd csak sikeres aktiválás után oldja fel a kurzor korlátozását. Nincs korábbi WM_MOUSEACTIVATE/MA_NOACTIVATE tiltás. Az automatikus fordítás nem hívja ezt a fókuszátadást.
+- Egy fordításra kattintás vagy a listán belüli billentyűzetes kiválasztás frissíti a felső fordításmezőt; a lista és az ablakméret megmarad.
 - A fordítási, előzményes és beállításnézet külön méretet tárol; az ablak pozíciója is mentett.
 - A képernyő- és hangbeállítások közös beállításnézet-méretet használnak. A kettő közötti váltás (navigáció, fogaskerék vagy Vissza) nem módosíthatja az aktuális méretet vagy pozíciót. A régi külön hangbeállítás-méretet betöltéskor figyelmen kívül hagyjuk.
 - A beállításlapok közös stílusa és kártya-/mezőelemei a `src/settings_ui.py` modulban találhatók. A lapok tartalma görgethető, a mentés és visszalépés gombjai kívül maradnak a görgethető területen.
@@ -39,6 +41,8 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - Gyorsbillentyűk szabadon rögzíthetők, Mouse3 (görgő), Mouse4, Mouse5 támogatott; játékbeli gombnyomást a hook nem nyeli el.
 - Az előzmények műveletei a jobb klikkes menüben vannak; nincs külön műveleti gombsor. Ctrl/Shift többes kijelöléssel mappák és fordítások vegyesen törölhetők, a mappák tartalmával együtt. A megerősítés a deduplikált teljes darabszámot mutatja, és ugyanabban az ablakban marad.
 - Fordítások kivágása/másolása/beillesztése: Ctrl+X/C/V; átnevezés: F2; törlés: Delete; új mappa: Ctrl+Shift+N; frissítés: F5; összes kijelölése: Ctrl+A. A kivágás a sikeres beillesztésig nem módosítja a forrást, Esc megszakítja. A listaelemek és a kivágási vágólap stabil `_id` azonosítóval hivatkoznak a fordításokra, nem változó listaindexekkel.
+- Az almappák külön azonosítót, nevet és szülőazonosítót kapnak. A régi gyökérmappák neve továbbra is változatlan azonosító; a neveikben lévő elválasztókat nem értelmezzük útvonalként. Az almappák létrehozása v2 mappafájl-formátumot használ (`version`, `folders`: id/name/parent bejegyzések); a régi névlista továbbra is betölthető. Régebbi, csak névlistát ismerő alkalmazásverzióval a v2 mappafájl már nem kompatibilis.
+- A mappasorok és a helyválasztó összesített fordításszámot mutatnak, az almappákkal együtt. Az Alt+Fel a szülőre lép; a keresés az aktuális mappafában is keres. A mappatörlés, az átnevezés és a helyreállítási napló a szülő-/névmetaadatokat is kezeli.
 - Mappákat is törlő művelet előtt a régi előzmény- és mappaállapot a `forditasok.delete-pending.json` helyreállítási naplóba kerül. Siker után törlődik; félbeszakításkor a következő indulás visszaállítja a korábbi állapotot. Ha a helyreállítás nem sikerül, a további mentés tiltott, a napló megmarad.
 - Kép- és hangfordítás esetén a felismert játék mappájába kerülnek a mentések; törölt mappa újralétrejön, amennyiben a játék felismerése sikeres. Ismeretlen játéknál nem szabad az előző játék mappájába menteni.
 - A felismerés a Windows-folyamatokból, helyi telepítési adatokból és mentett párosításokból dolgozik. Nincs képalapú vagy hangszöveges AI-játékazonosítás.
@@ -78,5 +82,6 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
 
 
