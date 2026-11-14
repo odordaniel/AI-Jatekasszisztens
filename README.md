@@ -88,6 +88,10 @@ A gyorsbillentyűk a beállításokban módosíthatók.
 
 A korábban elkészült kép- és hangfordítások az előzmények között visszakereshetők. A műveletek a lista jobb klikkes menüjében találhatók: megnyitás, kivágás, másolás, beillesztés, áthelyezés, átnevezés, törlés és új mappa. A mappaválasztóval vagy egy mappa dupla kattintásával válthatsz helyet; a lista üres részére jobb kattintva az aktuális hely menüje nyílik meg.
 
+Az előzmények kézi megnyitása a programhoz kéri a fókuszt; Windows alatt a játék által korlátozott egérmutatót is felszabadítja, ha az ablak aktiválása sikerült. Egy fordításra kattintva annak teljes szövege jelenik meg a felső mezőben, az előzménylista bezárása nélkül.
+
+Mappán belül az **Új mappa** paranccsal almappát hozhatsz létre, több szinten is. A mappák mellett látható fordításszám az almappák tartalmát is beleszámítja. A mappaválasztó a teljes elérési utat mutatja; **Alt+Fel** vagy a helyi menü **Szülőmappa** parancsa egy szinttel feljebb lép. A mappa törlése az egész almappafát is érinti, a megerősítésben jelzett összes fordítással együtt.
+
 - `Ctrl+X`: a kijelölt fordítások kivágása; `Ctrl+C`: másolás; `Ctrl+V`: beillesztés az aktuális helyre. Mappa jobb klikkes Beillesztés parancsával közvetlenül abba a mappába helyezhetsz elemeket.
 - A kivágott elemek halványan jelennek meg, és csak sikeres beillesztéskor kerülnek át a célhoz. `Esc`: a kivágás megszakítása.
 - `Ctrl`/`Shift`: több elem kijelölése; `Ctrl+A`: összes látható elem; `Delete`: a teljes kijelölés törlése, mappák és fordítások vegyesen is. **A törölt mappák tartalma is törlődik**, megerősítés után.
@@ -190,5 +194,6 @@ python -m py_compile src/assistant.py src/live_translation.py
 A GitHub Actions a teszteket a portable EXE készítése előtt futtatja.
 A tesztek a kritikus tiszta logikát fedik le; a tényleges képernyőkijelölést,
 hangrögzítést és Windows felületet továbbra is Windows 11-en kell ellenőrizni.
+
 
 
