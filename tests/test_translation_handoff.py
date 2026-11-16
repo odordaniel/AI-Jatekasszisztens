@@ -175,6 +175,25 @@ class TranslationHandoffTests(unittest.TestCase):
         self.assertIsNone(self.active['worker'])
         self.assertIn('Fordítási hiba:', self.window.label.toPlainText())
 
+    def test_withheld_paint_watchdog_starts_request_exactly_once(self):
+        scheduled = []
+        self.window.setUpdatesEnabled(False)
+        try:
+            with patch.object(self.core.QTimer, 'singleShot', side_effect=lambda delay, callback: scheduled.append((delay, callback))):
+                self.deliver_crop(selector_support.Picture(320, 240))
+                watchdog = next(callback for delay, callback in scheduled if delay == 1000)
+                watchdog()
+                start = next(callback for delay, callback in scheduled if delay == 0)
+                start()
+                before = len(scheduled)
+                watchdog()
+                self.assertEqual(len(scheduled), before)
+        finally:
+            self.window.setUpdatesEnabled(True)
+        self.flush()
+        self.assertFalse(self.active['preparing'])
+        self.assertEqual([stage['name'] for stage in self.stages].count('worker-start'), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -2420,6 +2420,13 @@ class Overlay(QWidget):
         activate_window(int(self.winId()))
         self.label.setFocus(Qt.FocusReason.OtherFocusReason)
         self.repaint()
+        if on_painted is not None:
+            def paint_watchdog():
+                # Native windows can withhold Paint while minimized/occluded.
+                # Do not strand a request; this is not a normal startup delay.
+                if self._translation_pending_start is on_painted:
+                    self.schedule_translation_start()
+            QTimer.singleShot(1000, paint_watchdog)
 
     def show_message(self, text):
         if self._audio_result_open:
