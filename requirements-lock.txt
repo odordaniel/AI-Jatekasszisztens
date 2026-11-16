@@ -371,9 +371,9 @@ google-auth[requests]==2.62.2 \
     --hash=sha256:046c61a72d3a847d6df6417a7f0d5cf054e3b82bbcb54fb1e69d47880964049c \
     --hash=sha256:e9bcdb0679b6a4369ac327c5c59f06d92f7b4cd2624e7100294c14632f55a36b
     # via google-genai
-google-genai==3.1.0 \
-    --hash=sha256:08f482dea818a06068303e02fc2073ba5a2fd1312407ed9914e810a5cf179fea \
-    --hash=sha256:e28aea20f9c20ef3f7d3d923d19980099a910e865512f343a060f78a4754fb1d
+google-genai==3.3.0 \
+    --hash=sha256:86bd1830fec4b12e474237414fa52383aa0f49458910f6c9c938c207715559b5 \
+    --hash=sha256:c0ab7bfbf13d4a24a5798ec9e4200773b2fa150eb620317db337f751a9c9576c
     # via -r requirements.txt
 h11==0.16.0 \
     --hash=sha256:4e35b956cf45792e4caa5885e69fba00bdbc6ffafbfa020300e549b208ee5ff1 \
@@ -757,9 +757,9 @@ pyinstaller==6.22.3 \
     --hash=sha256:ea240b5dfa831ff673c97505eee0ec24670bccf71396c83109440348944c83d0 \
     --hash=sha256:f82d0fb89f21c3ed6f482ee16f341bc59e8a31dbabb9bae9ef04e53ade4dc0d9
     # via -r requirements.txt
-pyinstaller-hooks-contrib==2026.9 \
-    --hash=sha256:2748767901acb5cecd1304652b6c7add5bffcff1d71d01207fe24a5d42942a56 \
-    --hash=sha256:fb3e67dd64122561724c48ad0366ac9e8c16e638b63bf7d85de03bf3fdbf06c3
+pyinstaller-hooks-contrib==2026.10 \
+    --hash=sha256:7e906c659522e592a1680f30f709ffb6333277141a695926aa7190592205c5e3 \
+    --hash=sha256:dfc3cde20a7ce6c92e803016e66eed4b7050467e2c5f886a3745d89b258c6d6d
     # via pyinstaller
 pyside6-essentials==6.12.0 \
     --hash=sha256:0867b709a724db28b161227c7d6ecb5ed10cc09226a53542417ac6dee1308239 \
@@ -796,9 +796,9 @@ soundcard==0.4.6 \
     --hash=sha256:9b46d64a26f97cd7d88bcfc385c97c069f97c5ec3404e4e7c23771598a8cf47b \
     --hash=sha256:ab44b8c1033ac6ec49c5d618ce096dab9b60c7d7a427c92bef15856e5ebb3e09
     # via -r requirements.txt
-tenacity==9.1.4 \
-    --hash=sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55 \
-    --hash=sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a
+tenacity==9.2.1 \
+    --hash=sha256:9e56f17539296baab7beabb08b92f6ee3d7be92d8be72d763360677c2ad6580e \
+    --hash=sha256:a606b5c808d0cded4a359d5b9932d867ff2a6a6b64d37350260fd01bbdf83839
     # via google-genai
 truststore==0.10.5 \
     --hash=sha256:30d36967ccaded5cbb38d602c433f53600036c79d502f4533a49b60a03bbefcd \
