@@ -2419,6 +2419,9 @@ class RegionSelector(QWidget):
 
     def begin(self):
         if self.isVisible():
+            self.raise_()
+            self.activateWindow()
+            self.setFocus()
             return  # Never capture the selector itself on a repeated hotkey.
         self.origin = None
         self.current = None

@@ -153,9 +153,11 @@ class RegionSelectorTests(unittest.TestCase):
     def test_repeated_hotkey_does_not_capture_its_own_visible_overlay(self):
         self.begin()
         self.drag()
+        self.selector.clearFocus()
         self.selector.begin()
         self.assertEqual(len(self.captures), 1)
         self.assertEqual(self.selector.origin, QPoint(20, 30))
+        self.assertIs(self.selector.focusWidget(), self.selector)
 
     def test_capture_failure_does_not_retain_previous_selection_or_image(self):
         self.selector.origin = QPoint(10, 10)
