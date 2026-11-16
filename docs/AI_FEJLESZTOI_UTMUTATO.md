@@ -33,6 +33,7 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - Területkijelölés és FPS-fordítás után **csak a fordítás** jelenik meg, előzmények nem.
 - A kézi előzmény-nyitott/csukott állapot mentett marad. Az explicit Előzmények parancs (gyorsbillentyű vagy tálcamenü) megnyitja a listát és aktiválást kér; az automatikus fordítás miatti összecsukás nem írja át a kézi állapotot.
 - Az előzmények kézi megnyitásakor a program átveszi a fókuszt. A `src/window_focus.py` Windows alatt előtérbe aktiválja az ablakot, majd csak sikeres aktiválás után oldja fel a kurzor korlátozását. Nincs korábbi WM_MOUSEACTIVATE/MA_NOACTIVATE tiltás. Az automatikus fordítás nem hívja ezt a fókuszátadást.
+- Az explicit előzménynyitás a Qt minimalizált állapotát is helyreállítja. A show/layout és első újrarajzolás után, a következő Qt-eseményben kér natív aktiválást, majd TOPMOST/NOACTIVATE sorrendfrissítést és újrarajzolást. A kurzor csak sikeres aktiválás után kerül a lista közepére. Sikertelen aktiválást legfeljebb kétszer, 120 ms-onként próbál újra ugyanahhoz a kéréshez kötve; bezárás, előzmény-összecsukás, nézetváltás vagy fókuszvesztés megszakítja. Új kérés érvényteleníti a korábbi időzítőt.
 - Egy fordításra kattintás vagy a listán belüli billentyűzetes kiválasztás frissíti a felső fordításmezőt; a lista és az ablakméret megmarad.
 - A fordítási, előzményes és beállításnézet külön méretet tárol; az ablak pozíciója is mentett.
 - A képernyő- és hangbeállítások közös beállításnézet-méretet használnak. A kettő közötti váltás (navigáció, fogaskerék vagy Vissza) nem módosíthatja az aktuális méretet vagy pozíciót. A régi külön hangbeállítás-méretet betöltéskor figyelmen kívül hagyjuk.
@@ -48,6 +49,10 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - A felismerés a Windows-folyamatokból, helyi telepítési adatokból és mentett párosításokból dolgozik. Nincs képalapú vagy hangszöveges AI-játékazonosítás.
 - API URL, kulcs, elsődleges/fallback modell és modelllista lekérés a beállításokban.
 - Az API **képet** kap, nem pusztán felismert szöveget; nincs folyamatos képernyőmentés.
+- A kijelölőablak sikeres kijelölés, túl kicsi terület, Esc és bezárás esetén még az elrejtés előtt törli a régi koordinátákat és képet, majd szinkron újrarajzolással téglalap nélküli képkockát hagy hátra. Az áttetsző háttér CompositionMode_Source módban teljesen felülírja a régi képkockát. Már látható kijelölő ismételt indítása nem készít új képernyőképet a saját rétegéről.
+- Sikeres kijelöléskor a tisztítás után, még a kijelölő elrejtése előtt érkezik a `selected` jelzés. A fogadó azonnal megnyitja és aktiválja a „fordítás folyamatban” ablakot. A JPEG-előkészítés és az API-szál indítása a folyamatjelző első festése utáni Qt-eseményre kerül, `preparing` ütközésvédelemmel. Ha a felhasználó a festés előtt elrejti az ablakot, a háttérfeldolgozás akkor is elindul; a bezárással elnyomott eredmény nem nyitja újra az ablakot.
+- Ha az operációs rendszer nem küld festési eseményt, egy 1 másodperces figyelő elindítja a várakozó feldolgozást. Normál megjelenésnél nincs ilyen késleltetés; a figyelő a saját munkamenetéhez kötött, és nem indíthat dupla kérést.
+- A képi fordítás folyamatjelzője és kész eredménye a panel elrejtéséig előtérben tartott marad. Windows alatt a `keep_on_top` SetWindowPos/NOACTIVATE hívást használ, de nem kér ismételt billentyűzetfókuszt és nem mozgatja a kurzort. Fókuszvesztés után és 250 ms-onként újra érvényesíti a sorrendet. Elrejtéskor az időzítő leáll; az X gombbal, a bezáró gyorsbillentyűvel vagy natív bezárással elrejtett panel késői API-eredménye menthető, de nem nyithatja vissza a panelt. Rejtett vagy minimalizált ablakot az előtérben tartó hívás nem jelenít meg.
 
 ## Adatok és biztonság
 Felhasználói adatok: `%LOCALAPPDATA%\AIJatekasszisztens`:
@@ -82,6 +87,10 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
+
+
+
 
 
 

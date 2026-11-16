@@ -6,10 +6,33 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
-from window_focus import activate_window
+from window_focus import activate_window, keep_on_top
 
 
 class WindowFocusTests(unittest.TestCase):
+    def test_topmost_reassertion_neither_activates_nor_shows_or_moves_window(self):
+        user = SimpleNamespace(SetWindowPos=Mock(return_value=True),
+                               SetForegroundWindow=Mock(), SetFocus=Mock(), ClipCursor=Mock())
+        self.assertTrue(keep_on_top(222, user))
+        args = user.SetWindowPos.call_args.args
+        self.assertEqual(args[:6], (222, -1, 0, 0, 0, 0))
+        flags = args[-1]
+        self.assertTrue(flags & 0x0010)  # NOACTIVATE
+        self.assertTrue(flags & 0x0001 and flags & 0x0002)  # NOSIZE and NOMOVE
+        self.assertFalse(flags & 0x0040)  # no SHOWWINDOW
+        user.SetForegroundWindow.assert_not_called()
+        user.SetFocus.assert_not_called()
+        user.ClipCursor.assert_not_called()
+
+    def test_topmost_native_failure_is_nonfatal(self):
+        user = SimpleNamespace(SetWindowPos=Mock(side_effect=OSError('failure')))
+        self.assertFalse(keep_on_top(222, user))
+
+    def test_invalid_handle_is_not_reasserted(self):
+        user = SimpleNamespace(SetWindowPos=Mock())
+        self.assertFalse(keep_on_top(0, user))
+        user.SetWindowPos.assert_not_called()
+
     def apis(self):
         user = SimpleNamespace(**{name: Mock(return_value=1) for name in (
             'GetForegroundWindow', 'GetWindowThreadProcessId', 'AttachThreadInput',
@@ -50,3 +73,4 @@ class WindowFocusTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -1,8 +1,27 @@
-"""Foreground activation for an explicitly opened Windows history window."""
+"""Windows activation and non-activating Z-order helpers."""
 import ctypes
 from ctypes import wintypes
 import logging
 import os
+
+
+def keep_on_top(hwnd, user32=None):
+    """Reassert the visible window's Z-order without activating it or showing it."""
+    if not hwnd:
+        return False
+    if user32 is None:
+        if os.name != 'nt':
+            return False
+        user32 = ctypes.windll.user32
+    try:
+        user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
+                                       ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
+        user32.SetWindowPos.restype = wintypes.BOOL
+        # NOSIZE | NOMOVE | NOACTIVATE | NOOWNERZORDER. Deliberately no SHOWWINDOW.
+        return bool(user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010 | 0x0200))
+    except (OSError, AttributeError, ValueError):
+        logging.debug('A fordítóablak előtérben tartása sikertelen.', exc_info=True)
+        return False
 
 
 def activate_window(hwnd, user32=None, kernel32=None):
@@ -51,3 +70,4 @@ def activate_window(hwnd, user32=None, kernel32=None):
                 user32.AttachThreadInput(current_thread, foreground_thread, False)
             except OSError:
                 logging.warning('Az ideiglenes beviteli kapcsolat bontása sikertelen.')
+

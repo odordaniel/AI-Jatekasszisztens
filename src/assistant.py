@@ -1054,6 +1054,9 @@ class Overlay(QWidget):
         self._transcript_return_mode = 'history'
         self._audio_result_open = False
         self._audio_processing_visible = False
+        self._history_focus_request = None
+        self._translation_pending_start = None
+        self._translation_pinned = False
         self.audio_recorder_toggle = None
         self._audio_return_mode = 'compact'
         self.audio_settings_panel = None
@@ -1068,6 +1071,10 @@ class Overlay(QWidget):
         self.geometry_timer.setSingleShot(True)
         self.geometry_timer.setInterval(500)
         self.geometry_timer.timeout.connect(self.save_geometry)
+
+        self.translation_topmost_timer = QTimer(self)
+        self.translation_topmost_timer.setInterval(250)
+        self.translation_topmost_timer.timeout.connect(self.keep_translation_on_top)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(13, 13, 13, 13)
@@ -1121,6 +1128,7 @@ class Overlay(QWidget):
         self.label.setAcceptRichText(False)
         self.label.setPlaceholderText('Itt fog megjelenni a kijelölt játékbeli szöveg fordítása.')
         self.label.setMinimumHeight(75)
+        self.label.installEventFilter(self)
         content.addWidget(self.label, 1)
 
         # Both settings views share navigation, spacing and the current geometry.
@@ -1249,6 +1257,7 @@ class Overlay(QWidget):
         self.settings_panel.hide()
 
         self.history_panel = QFrame()
+        self.history_panel.installEventFilter(self)
         self.history_panel.setObjectName('historyPanel')
         history_layout = QVBoxLayout(self.history_panel)
         history_layout.setContentsMargins(11, 10, 11, 10)
@@ -1706,6 +1715,7 @@ class Overlay(QWidget):
     shortcuts_changed = Signal()
     shortcut_capture_started = Signal()
     shortcut_capture_finished = Signal()
+    translation_dismissed = Signal()
 
     def save_settings(self):
         for field in self.shortcut_inputs.values():
@@ -2075,6 +2085,10 @@ class Overlay(QWidget):
             self.history_notice('Mentési hiba: a fordítások az eredeti helyükön maradtak.')
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self, 'history_panel', None) and event.type() == QEvent.Type.Hide:
+            self._history_focus_request = None
+        if watched is getattr(self, 'label', None) and event.type() in (QEvent.Type.Paint, QEvent.Type.Hide):
+            self.schedule_translation_start()
         if watched is self.handle:
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self.drag_start = event.globalPosition().toPoint() - self.pos()
@@ -2316,6 +2330,8 @@ class Overlay(QWidget):
             'Előzmények bezárása' if active else 'Előzmények megnyitása (Ctrl+Shift+H)')
 
     def set_history_open(self, should_open, focus=False, remember=True):
+        if not should_open:
+            self._history_focus_request = None
         if self._audio_result_open:
             self.close_audio_result()
         if not self.audio_settings_scroll.isHidden():
@@ -2363,14 +2379,44 @@ class Overlay(QWidget):
 
 
     def focus_history(self):
+        # show() alone preserves Qt's minimized state, even if Win32 later
+        # restores the HWND. Finish layout/show before native activation.
+        request = object()
+        self._history_focus_request = request
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()
-        from window_focus import activate_window
-        if activate_window(int(self.winId())):
-            QCursor.setPos(self.history_list.viewport().mapToGlobal(self.history_list.viewport().rect().center()))
+        self.layout().activate()
         self.history_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.repaint()
+        # The game can change display mode/z-order when it loses activation.
+        # Finish the handoff after the current show/layout events, then redraw
+        # and restore topmost order after native activation as well.
+        QTimer.singleShot(0, lambda: self.finish_history_focus(request))
+
+    def finish_history_focus(self, request, attempt=0):
+        if (self._history_focus_request is not request or not self.isVisible()
+                or self.isMinimized() or self.history_panel.isHidden()):
+            return
+        from window_focus import activate_window, keep_on_top
+        self.raise_()
+        activated = activate_window(int(self.winId()))
+        keep_on_top(int(self.winId()))
+        self.repaint()
+        if activated:
+            self._history_focus_request = None
+            self.history_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            viewport = self.history_list.viewport()
+            QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
+        elif attempt < 2:
+            # A fullscreen display transition can temporarily deny activation.
+            # Retry this one request, never require a second key press.
+            QTimer.singleShot(120, lambda: self.finish_history_focus(request, attempt + 1))
+        else:
+            self._history_focus_request = None
 
     def show_history_from_hotkey(self):
         if not self.audio_settings_scroll.isHidden():
@@ -2392,6 +2438,62 @@ class Overlay(QWidget):
         if not self.settings_panel.isHidden():
             self.close_settings()
         self.set_history_open(False, remember=False)
+
+    def schedule_translation_start(self):
+        callback = getattr(self, '_translation_pending_start', None)
+        if callback is not None:
+            self._translation_pending_start = None
+            # Run after this paint event and the backing-store flush return.
+            QTimer.singleShot(0, callback)
+
+    def keep_translation_on_top(self):
+        if not self._translation_pinned or not self.isVisible() or self.isMinimized():
+            return False
+        from window_focus import keep_on_top
+        return keep_on_top(int(self.winId()))
+
+    def pin_translation(self):
+        self._translation_pinned = True
+        self.translation_topmost_timer.start()
+        self.keep_translation_on_top()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow()):
+            self._history_focus_request = None
+        if (event.type() == QEvent.Type.ActivationChange and
+                getattr(self, '_translation_pinned', False) and not self.isActiveWindow()):
+            QTimer.singleShot(0, self.keep_translation_on_top)
+
+    def hideEvent(self, event):
+        self._history_focus_request = None
+        if getattr(self, '_translation_pinned', False):
+            self._translation_pinned = False
+            self.translation_topmost_timer.stop()
+            self.translation_dismissed.emit()
+        # Closing before the first paint must not leave preparation stuck.
+        self.schedule_translation_start()
+        super().hideEvent(event)
+
+    def show_translation_pending(self, on_painted=None):
+        """Present a painted progress window before encoding or API work."""
+        self.prepare_translation()
+        self._translation_pending_start = on_painted
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.show_message('Kijelölt terület fordítása folyamatban…')
+        self.activateWindow()
+        from window_focus import activate_window
+        activate_window(int(self.winId()))
+        self.pin_translation()
+        self.label.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.repaint()
+        if on_painted is not None:
+            def paint_watchdog():
+                # Native windows can withhold Paint while minimized/occluded.
+                # Do not strand a request; this is not a normal startup delay.
+                if self._translation_pending_start is on_painted:
+                    self.schedule_translation_start()
+            QTimer.singleShot(1000, paint_watchdog)
 
     def show_message(self, text):
         if self._audio_result_open:
@@ -2418,6 +2520,14 @@ class RegionSelector(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def begin(self):
+        if self.isVisible():
+            self.raise_()
+            self.activateWindow()
+            self.setFocus()
+            return  # Never capture the selector itself on a repeated hotkey.
+        self.origin = None
+        self.current = None
+        self.image = None
         # Import screenshot-only dependencies when capturing, not at startup.
         import mss
         from PIL import Image
@@ -2428,17 +2538,17 @@ class RegionSelector(QWidget):
             mon = sct.monitors[1]
             shot = sct.grab(mon)
             self.image = Image.frombytes('RGB', shot.size, shot.rgb)
-        self.origin = None
-        self.current = None
         self.setGeometry(self.screen_rect)
         self.show()
         self.raise_()
         self.activateWindow()
         self.setFocus()
-        self.update()
+        self.repaint()  # Paint this session before returning to the event loop.
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        # Replace the previous translucent frame, including its old cutout.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 85))
         if self.origin is not None and self.current is not None:
             r = QRect(self.origin, self.current).normalized()
@@ -2465,25 +2575,41 @@ class RegionSelector(QWidget):
             return
         self.current = event.position().toPoint()
         r = QRect(self.origin, self.current).normalized().intersected(self.rect())
-        self.hide()
         if r.width() < 12 or r.height() < 12:
-            self.image = None
+            self.dismiss()
             return
         # Qt logikai koordinátáit a rögzített kép pixeleire alakítjuk.
         sx = self.image.width / self.width()
         sy = self.image.height / self.height()
         crop = self.image.crop((round(r.left()*sx), round(r.top()*sy),
                                 round((r.left()+r.width())*sx), round((r.top()+r.height())*sy)))
-        self.image = None  # Ne tartsuk memóriában a teljes képernyőt.
-        self.selected.emit(crop)
+        self.clear_frame()
+        try:
+            # The receiver opens the progress window while this process still
+            # owns the foreground, before hiding the selector gives focus away.
+            self.selected.emit(crop)
+        finally:
+            self.hide()
 
-    def cancel(self):
-        """Dismiss the selection and discard the captured frame, without translating."""
-        self.hide()
+    def clear_frame(self):
+        """Leave no old rectangle in the reusable window's last painted frame."""
         self.origin = None
         self.current = None
         self.image = None
-        self.update()
+        if self.isVisible():
+            self.repaint()  # A hidden widget's update() would only be deferred.
+
+    def dismiss(self):
+        self.clear_frame()
+        self.hide()
+
+    def cancel(self):
+        """Dismiss the selection and discard the captured frame, without translating."""
+        self.dismiss()
+
+    def closeEvent(self, event):
+        self.cancel()
+        event.accept()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -2768,46 +2894,61 @@ def main():
     live_settings.processing_status.connect(overlay.update_audio_processing)
     live_settings.processing_empty.connect(overlay.show_audio_processing_error)
     selector = RegionSelector()
-    active = {'worker': None, 'suppress_result': False, 'game': '', 'generation': 0}
+    active = {'worker': None, 'preparing': False, 'suppress_result': False, 'game': '', 'generation': 0}
+
+    def translation_dismissed():
+        active['suppress_result'] = True
+
+    overlay.translation_dismissed.connect(translation_dismissed)
 
     def send_selection(image):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return  # A futó fordítás ablakát ne írja felül új kérés.
-        overlay.prepare_translation()
         active['generation'] += 1
         generation = active['generation']
-        max_width = max(320, int(cfg['max_image_width']))
-        if image.width > max_width:
-            image.thumbnail((max_width, max_width * image.height // image.width))
         active['suppress_result'] = False
-        buffer = io.BytesIO()
-        image.save(buffer, format='JPEG', quality=88)
-        overlay.show_message('Kijelölt terület fordítása folyamatban…')
-        worker = Translator(buffer.getvalue(), cfg)
-        active['worker'] = worker
+        active['preparing'] = True
 
-        def handle_result(text):
-            if generation != active['generation']:
-                return  # Egy korábbi kérés késve érkező válasza.
-            saved_game = active.get('game', '')  # Preserve detection at capture time.
-            saved = history.add(text, saved_game)
-            if saved:
-                overlay.sync_folders()
-            if active['suppress_result']:
-                return  # The user closed the overlay while the API request was running.
-            if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
-                overlay.show_history_item(len(history.items) - 1)
-            else:
-                overlay.show_message(text)
+        def start_request():
+            try:
+                max_width = max(320, int(cfg['max_image_width']))
+                if image.width > max_width:
+                    image.thumbnail((max_width, max_width * image.height // image.width))
+                buffer = io.BytesIO()
+                image.save(buffer, format='JPEG', quality=88)
+                worker = Translator(buffer.getvalue(), cfg)
+                active['worker'] = worker
 
-        worker.finished_text.connect(handle_result)
-        worker.model_started.connect(
-            lambda model, fallback: overlay.show_active_model(model, fallback)
-            if generation == active['generation'] and not active['suppress_result'] else None)
-        worker.start()
+                def handle_result(text):
+                    if generation != active['generation']:
+                        return  # Egy korábbi kérés késve érkező válasza.
+                    saved_game = active.get('game', '')  # Preserve detection at capture time.
+                    saved = history.add(text, saved_game)
+                    if saved:
+                        overlay.sync_folders()
+                    if active['suppress_result']:
+                        return  # The user closed the overlay while the API request was running.
+                    if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
+                        overlay.show_history_item(len(history.items) - 1)
+                    else:
+                        overlay.show_message(text)
+
+                worker.finished_text.connect(handle_result)
+                worker.model_started.connect(
+                    lambda model, fallback: overlay.show_active_model(model, fallback)
+                    if generation == active['generation'] and not active['suppress_result'] else None)
+                worker.start()
+            except Exception as exc:
+                logging.warning('A kijelölt kép feldolgozása sikertelen (%s).', type(exc).__name__)
+                if not active['suppress_result']:
+                    overlay.show_message('Fordítási hiba: a kijelölt kép feldolgozása nem sikerült.')
+            finally:
+                active['preparing'] = False
+
+        overlay.show_translation_pending(start_request)
 
     def translate(from_tray=False):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
@@ -2819,7 +2960,7 @@ def main():
             logging.exception('Kijelölési hiba')
 
     def translate_center(from_tray=False):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
@@ -3005,6 +3146,10 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
+
+
+
 
 
 
