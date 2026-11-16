@@ -1055,6 +1055,7 @@ class Overlay(QWidget):
         self._audio_result_open = False
         self._audio_processing_visible = False
         self._translation_pending_start = None
+        self._translation_pinned = False
         self.audio_recorder_toggle = None
         self._audio_return_mode = 'compact'
         self.audio_settings_panel = None
@@ -1069,6 +1070,10 @@ class Overlay(QWidget):
         self.geometry_timer.setSingleShot(True)
         self.geometry_timer.setInterval(500)
         self.geometry_timer.timeout.connect(self.save_geometry)
+
+        self.translation_topmost_timer = QTimer(self)
+        self.translation_topmost_timer.setInterval(250)
+        self.translation_topmost_timer.timeout.connect(self.keep_translation_on_top)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(13, 13, 13, 13)
@@ -1708,6 +1713,7 @@ class Overlay(QWidget):
     shortcuts_changed = Signal()
     shortcut_capture_started = Signal()
     shortcut_capture_finished = Signal()
+    translation_dismissed = Signal()
 
     def save_settings(self):
         for field in self.shortcut_inputs.values():
@@ -2404,7 +2410,28 @@ class Overlay(QWidget):
             # Run after this paint event and the backing-store flush return.
             QTimer.singleShot(0, callback)
 
+    def keep_translation_on_top(self):
+        if not self._translation_pinned or not self.isVisible() or self.isMinimized():
+            return False
+        from window_focus import keep_on_top
+        return keep_on_top(int(self.winId()))
+
+    def pin_translation(self):
+        self._translation_pinned = True
+        self.translation_topmost_timer.start()
+        self.keep_translation_on_top()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if (event.type() == QEvent.Type.ActivationChange and
+                getattr(self, '_translation_pinned', False) and not self.isActiveWindow()):
+            QTimer.singleShot(0, self.keep_translation_on_top)
+
     def hideEvent(self, event):
+        if getattr(self, '_translation_pinned', False):
+            self._translation_pinned = False
+            self.translation_topmost_timer.stop()
+            self.translation_dismissed.emit()
         # Closing before the first paint must not leave preparation stuck.
         self.schedule_translation_start()
         super().hideEvent(event)
@@ -2418,6 +2445,7 @@ class Overlay(QWidget):
         self.activateWindow()
         from window_focus import activate_window
         activate_window(int(self.winId()))
+        self.pin_translation()
         self.label.setFocus(Qt.FocusReason.OtherFocusReason)
         self.repaint()
         if on_painted is not None:
@@ -2829,6 +2857,11 @@ def main():
     selector = RegionSelector()
     active = {'worker': None, 'preparing': False, 'suppress_result': False, 'game': '', 'generation': 0}
 
+    def translation_dismissed():
+        active['suppress_result'] = True
+
+    overlay.translation_dismissed.connect(translation_dismissed)
+
     def send_selection(image):
         if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return  # A futó fordítás ablakát ne írja felül új kérés.
@@ -3074,6 +3107,7 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
 
