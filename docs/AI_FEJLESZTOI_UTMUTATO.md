@@ -33,6 +33,7 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - Területkijelölés és FPS-fordítás után **csak a fordítás** jelenik meg, előzmények nem.
 - A kézi előzmény-nyitott/csukott állapot mentett marad. Az explicit Előzmények parancs (gyorsbillentyű vagy tálcamenü) megnyitja a listát és aktiválást kér; az automatikus fordítás miatti összecsukás nem írja át a kézi állapotot.
 - Az előzmények kézi megnyitásakor a program átveszi a fókuszt. A `src/window_focus.py` Windows alatt előtérbe aktiválja az ablakot, majd csak sikeres aktiválás után oldja fel a kurzor korlátozását. Nincs korábbi WM_MOUSEACTIVATE/MA_NOACTIVATE tiltás. Az automatikus fordítás nem hívja ezt a fókuszátadást.
+- Az explicit előzménynyitás a Qt minimalizált állapotát is helyreállítja. A show/layout és első újrarajzolás után, a következő Qt-eseményben kér natív aktiválást, majd TOPMOST/NOACTIVATE sorrendfrissítést és újrarajzolást. A kurzor csak sikeres aktiválás után kerül a lista közepére. Sikertelen aktiválást legfeljebb kétszer, 120 ms-onként próbál újra ugyanahhoz a kéréshez kötve; bezárás, előzmény-összecsukás, nézetváltás vagy fókuszvesztés megszakítja. Új kérés érvényteleníti a korábbi időzítőt.
 - Egy fordításra kattintás vagy a listán belüli billentyűzetes kiválasztás frissíti a felső fordításmezőt; a lista és az ablakméret megmarad.
 - A fordítási, előzményes és beállításnézet külön méretet tárol; az ablak pozíciója is mentett.
 - A képernyő- és hangbeállítások közös beállításnézet-méretet használnak. A kettő közötti váltás (navigáció, fogaskerék vagy Vissza) nem módosíthatja az aktuális méretet vagy pozíciót. A régi külön hangbeállítás-méretet betöltéskor figyelmen kívül hagyjuk.
@@ -86,6 +87,7 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
 
 
 

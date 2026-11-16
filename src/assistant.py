@@ -1054,6 +1054,7 @@ class Overlay(QWidget):
         self._transcript_return_mode = 'history'
         self._audio_result_open = False
         self._audio_processing_visible = False
+        self._history_focus_request = None
         self._translation_pending_start = None
         self._translation_pinned = False
         self.audio_recorder_toggle = None
@@ -1256,6 +1257,7 @@ class Overlay(QWidget):
         self.settings_panel.hide()
 
         self.history_panel = QFrame()
+        self.history_panel.installEventFilter(self)
         self.history_panel.setObjectName('historyPanel')
         history_layout = QVBoxLayout(self.history_panel)
         history_layout.setContentsMargins(11, 10, 11, 10)
@@ -2083,6 +2085,8 @@ class Overlay(QWidget):
             self.history_notice('Mentési hiba: a fordítások az eredeti helyükön maradtak.')
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self, 'history_panel', None) and event.type() == QEvent.Type.Hide:
+            self._history_focus_request = None
         if watched is getattr(self, 'label', None) and event.type() in (QEvent.Type.Paint, QEvent.Type.Hide):
             self.schedule_translation_start()
         if watched is self.handle:
@@ -2326,6 +2330,8 @@ class Overlay(QWidget):
             'Előzmények bezárása' if active else 'Előzmények megnyitása (Ctrl+Shift+H)')
 
     def set_history_open(self, should_open, focus=False, remember=True):
+        if not should_open:
+            self._history_focus_request = None
         if self._audio_result_open:
             self.close_audio_result()
         if not self.audio_settings_scroll.isHidden():
@@ -2373,14 +2379,44 @@ class Overlay(QWidget):
 
 
     def focus_history(self):
+        # show() alone preserves Qt's minimized state, even if Win32 later
+        # restores the HWND. Finish layout/show before native activation.
+        request = object()
+        self._history_focus_request = request
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        if self.isMinimized():
+            self.setWindowState(self.windowState() & ~Qt.WindowState.WindowMinimized)
         self.show()
         self.raise_()
         self.activateWindow()
-        from window_focus import activate_window
-        if activate_window(int(self.winId())):
-            QCursor.setPos(self.history_list.viewport().mapToGlobal(self.history_list.viewport().rect().center()))
+        self.layout().activate()
         self.history_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.repaint()
+        # The game can change display mode/z-order when it loses activation.
+        # Finish the handoff after the current show/layout events, then redraw
+        # and restore topmost order after native activation as well.
+        QTimer.singleShot(0, lambda: self.finish_history_focus(request))
+
+    def finish_history_focus(self, request, attempt=0):
+        if (self._history_focus_request is not request or not self.isVisible()
+                or self.isMinimized() or self.history_panel.isHidden()):
+            return
+        from window_focus import activate_window, keep_on_top
+        self.raise_()
+        activated = activate_window(int(self.winId()))
+        keep_on_top(int(self.winId()))
+        self.repaint()
+        if activated:
+            self._history_focus_request = None
+            self.history_list.setFocus(Qt.FocusReason.ShortcutFocusReason)
+            viewport = self.history_list.viewport()
+            QCursor.setPos(viewport.mapToGlobal(viewport.rect().center()))
+        elif attempt < 2:
+            # A fullscreen display transition can temporarily deny activation.
+            # Retry this one request, never require a second key press.
+            QTimer.singleShot(120, lambda: self.finish_history_focus(request, attempt + 1))
+        else:
+            self._history_focus_request = None
 
     def show_history_from_hotkey(self):
         if not self.audio_settings_scroll.isHidden():
@@ -2423,11 +2459,14 @@ class Overlay(QWidget):
 
     def changeEvent(self, event):
         super().changeEvent(event)
+        if (event.type() == QEvent.Type.ActivationChange and not self.isActiveWindow()):
+            self._history_focus_request = None
         if (event.type() == QEvent.Type.ActivationChange and
                 getattr(self, '_translation_pinned', False) and not self.isActiveWindow()):
             QTimer.singleShot(0, self.keep_translation_on_top)
 
     def hideEvent(self, event):
+        self._history_focus_request = None
         if getattr(self, '_translation_pinned', False):
             self._translation_pinned = False
             self.translation_topmost_timer.stop()
@@ -3107,6 +3146,7 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
 
