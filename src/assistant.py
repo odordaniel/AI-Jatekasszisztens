@@ -673,24 +673,76 @@ class HistoryStore:
                      if self.folder_title(key).casefold() == title.casefold()), None)
 
     def descendant_folders(self, folders):
+        children = {}
+        for key in self.folders:
+            children.setdefault(self.folder_parents.get(key, ''), []).append(key)
         result = set(folders)
         pending = list(result)
         while pending:
-            for child in self.child_folders(pending.pop()):
+            for child in children.get(pending.pop(), ()):
                 if child not in result:
                     result.add(child)
                     pending.append(child)
         return result
 
     def folder_counts(self):
+        # Count each record once, then aggregate from leaves to roots. Avoid
+        # walking the same ancestor chain for every translation.
         counts = dict.fromkeys(self.folders, 0)
+        remaining = dict.fromkeys(self.folders, 0)
         for entry in self.items:
-            key, visited = entry.get('folder', ''), set()
-            while key in counts and key not in visited:
+            key = entry.get('folder', '')
+            if key in counts:
                 counts[key] += 1
-                visited.add(key)
-                key = self.folder_parents.get(key, '')
+        for key in counts:
+            parent = self.folder_parents.get(key)
+            if parent in remaining:
+                remaining[parent] += 1
+        pending = [key for key in remaining if remaining[key] == 0]
+        while pending:
+            key = pending.pop()
+            parent = self.folder_parents.get(key)
+            if parent in counts:
+                counts[parent] += counts[key]
+                remaining[parent] -= 1
+                if remaining[parent] == 0:
+                    pending.append(parent)
         return counts
+
+    def _begin_folder_change(self):
+        """Journal the previous state before replacing either storage file."""
+        journal = HISTORY_PATH.with_suffix('.delete-pending.json')
+        if not self._history_writable or not self._folders_writable or journal.exists():
+            return None
+        previous = {'items': [dict(x) for x in self.items], 'folders': list(self.folders),
+                    'folder_parents': dict(self.folder_parents), 'folder_titles': dict(self.folder_titles)}
+        try:
+            temporary = journal.with_suffix('.tmp')
+            temporary.write_text(json.dumps(previous, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(journal)
+            return previous
+        except (OSError, TypeError, ValueError):
+            return None
+
+    def _finish_folder_change(self, previous):
+        journal = HISTORY_PATH.with_suffix('.delete-pending.json')
+        if self.save() and self.save_folders():
+            try:
+                journal.unlink()
+                return True
+            except OSError:
+                pass
+        self.items, self.folders = previous['items'], previous['folders']
+        self.folder_parents, self.folder_titles = previous['folder_parents'], previous['folder_titles']
+        restored = self.save() and self.save_folders()
+        if restored:
+            try:
+                journal.unlink(missing_ok=True)
+            except OSError:
+                restored = False
+        if not restored:
+            self._history_writable = self._folders_writable = False
+        return False
 
     def folder_payload(self):
         if not self.folder_parents and not self.folder_titles:
@@ -730,8 +782,9 @@ class HistoryStore:
         key = old if parent else new
         if key != old and key in self.folders:
             return False
-        original = [dict(x) for x in self.items]
-        old_folders, old_parents, old_titles = list(self.folders), dict(self.folder_parents), dict(self.folder_titles)
+        previous = self._begin_folder_change()
+        if previous is None:
+            return False
         if parent:
             self.folder_titles[old] = new
         else:
@@ -739,32 +792,21 @@ class HistoryStore:
             self.folders[self.folders.index(old)] = key
             self.folder_parents = {child: key if value == old else value for child, value in self.folder_parents.items()}
             self.folder_titles.pop(old, None)
-        if not self.save() or not self.save_folders():
-            self.items, self.folders = original, old_folders
-            self.folder_parents, self.folder_titles = old_parents, old_titles
-            self.save()
-            self.save_folders()
-            return False
-        return True
+        return self._finish_folder_change(previous)
 
     def delete_folder(self, name):
         # Compatibility helper: remove a folder tree but preserve its records.
         if name not in self.folders:
             return False
         names = self.descendant_folders([name])
-        original = [dict(x) for x in self.items]
-        old_folders, old_parents, old_titles = list(self.folders), dict(self.folder_parents), dict(self.folder_titles)
+        previous = self._begin_folder_change()
+        if previous is None:
+            return False
         self.items = [dict(x, folder='') if x.get('folder') in names else x for x in self.items]
         self.folders = [key for key in self.folders if key not in names]
         self.folder_parents = {key: value for key, value in self.folder_parents.items() if key not in names}
         self.folder_titles = {key: value for key, value in self.folder_titles.items() if key not in names}
-        if not self.save() or not self.save_folders():
-            self.items, self.folders = original, old_folders
-            self.folder_parents, self.folder_titles = old_parents, old_titles
-            self.save()
-            self.save_folders()
-            return False
-        return True
+        return self._finish_folder_change(previous)
 
     def update_item(self, index, **changes):
         if not 0 <= index < len(self.items):
@@ -2894,7 +2936,7 @@ def main():
     live_settings.processing_status.connect(overlay.update_audio_processing)
     live_settings.processing_empty.connect(overlay.show_audio_processing_error)
     selector = RegionSelector()
-    active = {'worker': None, 'preparing': False, 'suppress_result': False, 'game': '', 'generation': 0}
+    active = {'worker': None, 'preparing': False, 'suppress_result': False, 'game': '', 'generation': 0, 'capturing': False, 'shutting_down': False}
 
     def translation_dismissed():
         active['suppress_result'] = True
@@ -2902,7 +2944,8 @@ def main():
     overlay.translation_dismissed.connect(translation_dismissed)
 
     def send_selection(image):
-        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
+        if (active.get('shutting_down') or active.get('capturing') or active.get('preparing')
+                or (active['worker'] and active['worker'].isRunning())):
             return  # A futó fordítás ablakát ne írja felül új kérés.
         active['generation'] += 1
         generation = active['generation']
@@ -2910,6 +2953,9 @@ def main():
         active['preparing'] = True
 
         def start_request():
+            if active.get('shutting_down'):
+                active['preparing'] = False
+                return
             try:
                 max_width = max(320, int(cfg['max_image_width']))
                 if image.width > max_width:
@@ -2948,7 +2994,8 @@ def main():
         overlay.show_translation_pending(start_request)
 
     def translate(from_tray=False):
-        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
+        if (active.get('shutting_down') or active.get('capturing') or active.get('preparing')
+                or (active['worker'] and active['worker'].isRunning())):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
@@ -2960,13 +3007,22 @@ def main():
             logging.exception('Kijelölési hiba')
 
     def translate_center(from_tray=False):
-        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
+        if selector.isVisible():
+            return
+        if (active.get('shutting_down') or active.get('capturing') or active.get('preparing')
+                or (active['worker'] and active['worker'].isRunning())):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
         overlay.hide()
+        request = object()
+        active['capture_request'] = request
+        active['capturing'] = True
         # Allow the previous overlay to disappear before capturing the desktop.
         def capture_center():
+            if (active.get('capture_request') is not request or not active.get('capturing')
+                    or active.get('shutting_down')):
+                return
             try:
                 import mss
                 from PIL import Image
@@ -2982,14 +3038,18 @@ def main():
                     shot = sct.grab(region)
                 # Only convert the requested region to RGB; do not allocate the full screen.
                 crop = Image.frombytes('RGB', shot.size, shot.rgb)
+                active['capturing'] = False
                 send_selection(crop)
             except Exception as exc:
+                active['capturing'] = False
                 overlay.show_message(f'FPS képrögzítési hiba: {exc}')
                 logging.exception('Center capture failed')
         QTimer.singleShot(200, capture_center)
 
     def close_current_view():
         """Close only the current UI, never terminate the background tray process."""
+        active['capture_request'] = None
+        active['capturing'] = False
         if selector.isVisible():
             selector.cancel()
             return
@@ -3099,25 +3159,24 @@ def main():
         overlay.save_geometry()
         if current_hotkeys['obj'] is not None:
             current_hotkeys['obj'].close()
-        if live_settings.request_shutdown():
-            live_settings.worker.finished.connect(shutdown_after_live)
-            overlay.hide()
-            live_settings.hide()
-            return
-        worker = active['worker']
-        if worker and worker.isRunning():
-            # A még futó HTTP-kérés lezárulta után lépünk ki, különben a QThread megsérülhet.
-            worker.finished.connect(app.quit)
-            overlay.hide()
-            tray.showMessage('AI Játékasszisztens', 'Kilépés a folyamatban lévő fordítás után.',
-                             QSystemTrayIcon.MessageIcon.Information, 3000)
-            return
-        app.quit()
+        active['shutting_down'] = True
+        active['capturing'] = False
+        active['suppress_result'] = True
+        selector.cancel()
+        overlay.hide()
+        live_settings.hide()
+        live_settings.request_shutdown()
+        shutdown_after_live()
 
     def shutdown_after_live():
-        worker = active['worker']
-        if worker and worker.isRunning():
-            worker.finished.connect(app.quit)
+        # Include discovery/device threads, not just paid translation workers.
+        # Poll on the GUI thread: connecting finished after isRunning() races
+        # with completion and can leave shutdown waiting forever.
+        workers = [active['worker'], overlay.discovery_worker, live_settings.worker,
+                   live_settings.device_loader, live_settings.model_loader,
+                   live_settings.text_model_loader]
+        if any(worker is not None and worker.isRunning() for worker in workers):
+            QTimer.singleShot(100, shutdown_after_live)
         else:
             app.quit()
 

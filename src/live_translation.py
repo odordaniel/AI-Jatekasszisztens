@@ -99,30 +99,9 @@ class TextModels(QThread):
 
     def run(self):
         try:
-            from urllib.parse import urlsplit
-            parsed = urlsplit(self.url)
-            if parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1')):
-                raise ValueError('HTTPS szükséges.')
-            base = self.url.strip().rstrip('/')
-            if not base.endswith('/chat/completions'):
-                raise ValueError('A fordító URL /chat/completions útvonallal végződjön.')
-            endpoint = (base[:-len('/api/chat/completions')] + '/api/models'
-                        if base.endswith('/api/chat/completions') else
-                        base[:-len('/chat/completions')] + '/models')
-            headers = {'Authorization': 'Bearer ' + self.key} if self.key else {}
-            with requests.Session() as session:
-                session.trust_env = False
-                resp = session.get(endpoint, headers=headers, timeout=(8, 20), allow_redirects=False,
-                                   verify=(str(Path.home() / 'AppData' / 'Local' / 'AIJatekasszisztens' / 'caddy-root.crt') if
-                                           (urlsplit(endpoint).hostname or '').endswith('.home.arpa') and
-                                           (Path.home() / 'AppData' / 'Local' / 'AIJatekasszisztens' / 'caddy-root.crt').is_file()
-                                           else certifi.where()))
-                resp.raise_for_status()
-                data = resp.json()
-            raw = data.get('data', data.get('models', []))
-            names = [x if isinstance(x, str) else x.get('id', x.get('name', ''))
-                     for x in raw if isinstance(x, (str, dict))]
-            self.loaded.emit(sorted({x.removeprefix('models/') for x in names if x}))
+            from assistant import fetch_available_models
+            names = fetch_available_models(self.url, self.key)
+            self.loaded.emit(sorted({name.removeprefix('models/') for name in names}))
         except Exception as exc:
             self.failed.emit(f'{type(exc).__name__}: {exc}')
 
@@ -172,14 +151,8 @@ class LiveWorker(QThread):
         tmp.replace(self.recovery_path)
 
     def _translate_sync(self, source):
-        from urllib.parse import urlsplit
-        from pathlib import Path
-        url = self.translate_url.strip()
-        parsed = urlsplit(url)
-        if parsed.scheme != 'https' and not (parsed.scheme == 'http' and parsed.hostname in ('localhost', '127.0.0.1', '::1')):
-            raise ValueError('A fordító végpontja HTTPS legyen (kivéve localhost).')
-        if not parsed.path.endswith('/chat/completions') or parsed.username or parsed.password or parsed.query or parsed.fragment:
-            raise ValueError('Érvénytelen fordító API URL: /chat/completions szükséges.')
+        from assistant import validate_api_url, tls_verify_for
+        url = validate_api_url(self.translate_url)
         headers = {'Content-Type': 'application/json'}
         if self.translate_key:
             headers['Authorization'] = 'Bearer ' + self.translate_key
@@ -193,12 +166,13 @@ class LiveWorker(QThread):
         models = [self.translate_model]
         if self.fallback_model and self.fallback_model not in models:
             models.append(self.fallback_model)
-        ca_path = Path.home() / 'AppData' / 'Local' / 'AIJatekasszisztens' / 'caddy-root.crt'
-        verify = str(ca_path) if parsed.hostname and parsed.hostname.endswith('.home.arpa') and ca_path.is_file() else certifi.where()
+        verify = tls_verify_for(url)
         errors = []
         with requests.Session() as client:
             client.trust_env = False
             for model in models:
+                if self.cancel.is_set():
+                    raise RuntimeError('A fordítás megszakítva.')
                 if not model:
                     continue
                 try:
@@ -206,8 +180,10 @@ class LiveWorker(QThread):
                         {'role': 'user', 'content': prompt}]}, headers=headers,
                         timeout=(8, 45), stream=True, allow_redirects=False,
                         verify=verify) as response:
+                        if response.is_redirect:
+                            raise RuntimeError('Az API átirányítást kért; elutasítva.')
                         if response.status_code >= 400:
-                            raise RuntimeError(f'HTTP {response.status_code}: ' + response.text[:400])
+                            raise RuntimeError(f'HTTP {response.status_code}')
                         chunks = []
                         total = 0
                         for part in response.iter_content(chunk_size=8192):
@@ -219,12 +195,18 @@ class LiveWorker(QThread):
                     text = data['choices'][0]['message']['content']
                     if isinstance(text, list):
                         text = ''.join(p.get('text', '') for p in text if isinstance(p, dict))
-                    translated = str(text).strip()
+                    if not isinstance(text, str):
+                        raise ValueError('Nem szöveges fordítási válasz.')
+                    translated = text.strip()
                     if not translated:
                         raise RuntimeError('Üres fordítás')
                     return translated, model
-                except Exception as exc:
-                    errors.append(f'{model}: {type(exc).__name__}: {exc}')
+                except requests.RequestException:
+                    errors.append(f'{model}: hálózati hiba vagy időtúllépés')
+                except (KeyError, IndexError, TypeError, ValueError):
+                    errors.append(f'{model}: hibás vagy üres API-válasz')
+                except RuntimeError as exc:
+                    errors.append(f'{model}: {exc}')
         raise RuntimeError(' | '.join(errors))
 
     def _save_entry(self, source, translation, used_model, error='', speaker='', elapsed=None):
@@ -724,6 +706,7 @@ class LiveTranslationSettings(QWidget):
         self.game_detector = game_detector
         self.text_model_loader = None
         self.worker = None
+        self._shutting_down = False
         self.model_loader = None
         self.device_loader = None
         self.subtitle = ClickThroughSubtitle()  # Kept for main-app shutdown compatibility; never shown.
@@ -1009,6 +992,8 @@ class LiveTranslationSettings(QWidget):
         self.status.setText(f'{len(models)} modell lekérve. A beszélők elkülönítéséhez gemini-3.5-transcribe modellt válassz.')
 
     def toggle(self):
+        if self._shutting_down:
+            return
         if self.worker and self.worker.isRunning():
             if self.worker.stop_requested.is_set():
                 self.status.setText('A felvétel feldolgozása már folyamatban van…')
@@ -1146,6 +1131,9 @@ class LiveTranslationSettings(QWidget):
             self.show()
 
     def request_shutdown(self):
+        self._shutting_down = True
+        self.blockSignals(True)
+        self.setEnabled(False)
         self.indicator.stop()
         if self.worker and self.worker.isRunning():
             self.worker.abort()
@@ -1156,5 +1144,6 @@ class LiveTranslationSettings(QWidget):
         # Closing settings MUST NOT stop an active background translation.
         self.save_settings()
         event.accept()
+
 
 
