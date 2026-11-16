@@ -49,6 +49,7 @@ Windows 11, PySide6 GUI, rendszerértesítési tálcaikon. Képernyőrészletet 
 - API URL, kulcs, elsődleges/fallback modell és modelllista lekérés a beállításokban.
 - Az API **képet** kap, nem pusztán felismert szöveget; nincs folyamatos képernyőmentés.
 - A kijelölőablak sikeres kijelölés, túl kicsi terület, Esc és bezárás esetén még az elrejtés előtt törli a régi koordinátákat és képet, majd szinkron újrarajzolással téglalap nélküli képkockát hagy hátra. Az áttetsző háttér CompositionMode_Source módban teljesen felülírja a régi képkockát. Már látható kijelölő ismételt indítása nem készít új képernyőképet a saját rétegéről.
+- Sikeres kijelöléskor a tisztítás után, még a kijelölő elrejtése előtt érkezik a `selected` jelzés. A fogadó azonnal megnyitja és aktiválja a „fordítás folyamatban” ablakot. A JPEG-előkészítés és az API-szál indítása a folyamatjelző első festése utáni Qt-eseményre kerül, `preparing` ütközésvédelemmel. Ha a felhasználó a festés előtt elrejti az ablakot, a háttérfeldolgozás akkor is elindul; a bezárással elnyomott eredmény nem nyitja újra az ablakot.
 
 ## Adatok és biztonság
 Felhasználói adatok: `%LOCALAPPDATA%\AIJatekasszisztens`:
@@ -83,6 +84,7 @@ FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrög
 
 ## Átadási szabály más AI-nak
 Mindig a v2.0.0 tényleges `src/assistant.py`, `src/live_translation.py` és `src/game_detection.py` függvényeiből indulj ki, és ellenőrizd a felhasználó ténylegesen futó verzióját. Változtatás előtt készíts másolatot, és ne törölj felhasználói adatot. A működő UI, gyorsbillentyűk és előzményállapot megtartása elsődleges. A kiadáskor az alkalmazáskódban kizárólag a verziókonstans változott; a többi korábbi funkcionális fejlesztés már a jelenlegi forrás része.
+
 
 
 

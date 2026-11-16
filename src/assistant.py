@@ -1054,6 +1054,7 @@ class Overlay(QWidget):
         self._transcript_return_mode = 'history'
         self._audio_result_open = False
         self._audio_processing_visible = False
+        self._translation_pending_start = None
         self.audio_recorder_toggle = None
         self._audio_return_mode = 'compact'
         self.audio_settings_panel = None
@@ -1121,6 +1122,7 @@ class Overlay(QWidget):
         self.label.setAcceptRichText(False)
         self.label.setPlaceholderText('Itt fog megjelenni a kijelölt játékbeli szöveg fordítása.')
         self.label.setMinimumHeight(75)
+        self.label.installEventFilter(self)
         content.addWidget(self.label, 1)
 
         # Both settings views share navigation, spacing and the current geometry.
@@ -2075,6 +2077,8 @@ class Overlay(QWidget):
             self.history_notice('Mentési hiba: a fordítások az eredeti helyükön maradtak.')
 
     def eventFilter(self, watched, event):
+        if watched is getattr(self, 'label', None) and event.type() in (QEvent.Type.Paint, QEvent.Type.Hide):
+            self.schedule_translation_start()
         if watched is self.handle:
             if event.type() == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self.drag_start = event.globalPosition().toPoint() - self.pos()
@@ -2393,6 +2397,30 @@ class Overlay(QWidget):
             self.close_settings()
         self.set_history_open(False, remember=False)
 
+    def schedule_translation_start(self):
+        callback = getattr(self, '_translation_pending_start', None)
+        if callback is not None:
+            self._translation_pending_start = None
+            # Run after this paint event and the backing-store flush return.
+            QTimer.singleShot(0, callback)
+
+    def hideEvent(self, event):
+        # Closing before the first paint must not leave preparation stuck.
+        self.schedule_translation_start()
+        super().hideEvent(event)
+
+    def show_translation_pending(self, on_painted=None):
+        """Present a painted progress window before encoding or API work."""
+        self.prepare_translation()
+        self._translation_pending_start = on_painted
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, False)
+        self.show_message('Kijelölt terület fordítása folyamatban…')
+        self.activateWindow()
+        from window_focus import activate_window
+        activate_window(int(self.winId()))
+        self.label.setFocus(Qt.FocusReason.OtherFocusReason)
+        self.repaint()
+
     def show_message(self, text):
         if self._audio_result_open:
             self.close_audio_result()
@@ -2481,16 +2509,24 @@ class RegionSelector(QWidget):
         sy = self.image.height / self.height()
         crop = self.image.crop((round(r.left()*sx), round(r.top()*sy),
                                 round((r.left()+r.width())*sx), round((r.top()+r.height())*sy)))
-        self.dismiss()
-        self.selected.emit(crop)
+        self.clear_frame()
+        try:
+            # The receiver opens the progress window while this process still
+            # owns the foreground, before hiding the selector gives focus away.
+            self.selected.emit(crop)
+        finally:
+            self.hide()
 
-    def dismiss(self):
+    def clear_frame(self):
         """Leave no old rectangle in the reusable window's last painted frame."""
         self.origin = None
         self.current = None
         self.image = None
         if self.isVisible():
             self.repaint()  # A hidden widget's update() would only be deferred.
+
+    def dismiss(self):
+        self.clear_frame()
         self.hide()
 
     def cancel(self):
@@ -2784,46 +2820,56 @@ def main():
     live_settings.processing_status.connect(overlay.update_audio_processing)
     live_settings.processing_empty.connect(overlay.show_audio_processing_error)
     selector = RegionSelector()
-    active = {'worker': None, 'suppress_result': False, 'game': '', 'generation': 0}
+    active = {'worker': None, 'preparing': False, 'suppress_result': False, 'game': '', 'generation': 0}
 
     def send_selection(image):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return  # A futó fordítás ablakát ne írja felül új kérés.
-        overlay.prepare_translation()
         active['generation'] += 1
         generation = active['generation']
-        max_width = max(320, int(cfg['max_image_width']))
-        if image.width > max_width:
-            image.thumbnail((max_width, max_width * image.height // image.width))
         active['suppress_result'] = False
-        buffer = io.BytesIO()
-        image.save(buffer, format='JPEG', quality=88)
-        overlay.show_message('Kijelölt terület fordítása folyamatban…')
-        worker = Translator(buffer.getvalue(), cfg)
-        active['worker'] = worker
+        active['preparing'] = True
 
-        def handle_result(text):
-            if generation != active['generation']:
-                return  # Egy korábbi kérés késve érkező válasza.
-            saved_game = active.get('game', '')  # Preserve detection at capture time.
-            saved = history.add(text, saved_game)
-            if saved:
-                overlay.sync_folders()
-            if active['suppress_result']:
-                return  # The user closed the overlay while the API request was running.
-            if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
-                overlay.show_history_item(len(history.items) - 1)
-            else:
-                overlay.show_message(text)
+        def start_request():
+            try:
+                max_width = max(320, int(cfg['max_image_width']))
+                if image.width > max_width:
+                    image.thumbnail((max_width, max_width * image.height // image.width))
+                buffer = io.BytesIO()
+                image.save(buffer, format='JPEG', quality=88)
+                worker = Translator(buffer.getvalue(), cfg)
+                active['worker'] = worker
 
-        worker.finished_text.connect(handle_result)
-        worker.model_started.connect(
-            lambda model, fallback: overlay.show_active_model(model, fallback)
-            if generation == active['generation'] and not active['suppress_result'] else None)
-        worker.start()
+                def handle_result(text):
+                    if generation != active['generation']:
+                        return  # Egy korábbi kérés késve érkező válasza.
+                    saved_game = active.get('game', '')  # Preserve detection at capture time.
+                    saved = history.add(text, saved_game)
+                    if saved:
+                        overlay.sync_folders()
+                    if active['suppress_result']:
+                        return  # The user closed the overlay while the API request was running.
+                    if history.items and history.items[-1]['text'] == text and not text.startswith('Fordítási hiba:'):
+                        overlay.show_history_item(len(history.items) - 1)
+                    else:
+                        overlay.show_message(text)
+
+                worker.finished_text.connect(handle_result)
+                worker.model_started.connect(
+                    lambda model, fallback: overlay.show_active_model(model, fallback)
+                    if generation == active['generation'] and not active['suppress_result'] else None)
+                worker.start()
+            except Exception as exc:
+                logging.warning('A kijelölt kép feldolgozása sikertelen (%s).', type(exc).__name__)
+                if not active['suppress_result']:
+                    overlay.show_message('Fordítási hiba: a kijelölt kép feldolgozása nem sikerült.')
+            finally:
+                active['preparing'] = False
+
+        overlay.show_translation_pending(start_request)
 
     def translate(from_tray=False):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
@@ -2835,7 +2881,7 @@ def main():
             logging.exception('Kijelölési hiba')
 
     def translate_center(from_tray=False):
-        if active['worker'] and active['worker'].isRunning():
+        if active.get('preparing') or (active['worker'] and active['worker'].isRunning()):
             return
         active['game'] = screenshot_game(from_tray=from_tray)
         overlay.prepare_translation()
@@ -3021,6 +3067,7 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
 
