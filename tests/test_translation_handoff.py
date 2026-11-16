@@ -175,6 +175,15 @@ class TranslationHandoffTests(unittest.TestCase):
         self.assertIsNone(self.active['worker'])
         self.assertIn('Fordítási hiba:', self.window.label.toPlainText())
 
+    def test_shutdown_before_first_paint_does_not_start_api_worker(self):
+        self.deliver_crop(selector_support.Picture(320, 240))
+        self.active['shutting_down'] = True
+        self.window.hide()
+        self.flush()
+        self.assertIsNone(self.active['worker'])
+        self.assertFalse(self.active['preparing'])
+        self.assertEqual(self.stages, [])
+
     def test_withheld_paint_watchdog_starts_request_exactly_once(self):
         scheduled = []
         self.window.setUpdatesEnabled(False)
@@ -197,3 +206,4 @@ class TranslationHandoffTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+

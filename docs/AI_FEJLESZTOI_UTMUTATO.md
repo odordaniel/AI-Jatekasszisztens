@@ -82,6 +82,13 @@ Windows, rövid könyvtárútvonal ajánlott (`C:\AIJA`), mert a PySide6 telepí
 - API teszt sikeres képes fordítással, hibás kulccsal, 429/503-mal, fallback-kel, modelllistával, Caddy CA-val.
 - Ne állíts Windowsos működést igazoltnak pusztán szintaktikai teszt alapján.
 
+## Legutóbbi kódátvizsgálás
+
+A 2026-11-16-i hibajavítások, a mappafa-optimalizálás mérései és az ellenőrzés
+határai: [Kódátvizsgálási jelentés](KODATVIZSGALAS_2026-11-16.md). A mappaátnevezés
+és a fordításokat megőrző mappatörlés is a `.delete-pending.json` naplóformátumot
+használja; kilépéskor a program a modelllista- és hangeszközszálakat is megvárja.
+
 ## Ismert korlátok
 FPS/anti-cheat játékok blokkolhatják a globális hookokat vagy képernyőrögzítést. A fallback modell jelenleg ugyanazt az API URL-t és kulcsot használja. A modelllista nem garantál képfeldolgozási képességet. A „portable” EXE nem jelenti a profil hordozhatóságát: az adatok AppDatában vannak. A képi és hangfordítás közötti játék-mappahozzárendelés, valamint az előzményállapot megőrzése kiemelt regressziós eset.
 
