@@ -2418,6 +2418,11 @@ class RegionSelector(QWidget):
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def begin(self):
+        if self.isVisible():
+            return  # Never capture the selector itself on a repeated hotkey.
+        self.origin = None
+        self.current = None
+        self.image = None
         # Import screenshot-only dependencies when capturing, not at startup.
         import mss
         from PIL import Image
@@ -2428,17 +2433,17 @@ class RegionSelector(QWidget):
             mon = sct.monitors[1]
             shot = sct.grab(mon)
             self.image = Image.frombytes('RGB', shot.size, shot.rgb)
-        self.origin = None
-        self.current = None
         self.setGeometry(self.screen_rect)
         self.show()
         self.raise_()
         self.activateWindow()
         self.setFocus()
-        self.update()
+        self.repaint()  # Paint this session before returning to the event loop.
 
     def paintEvent(self, event):
         painter = QPainter(self)
+        # Replace the previous translucent frame, including its old cutout.
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 85))
         if self.origin is not None and self.current is not None:
             r = QRect(self.origin, self.current).normalized()
@@ -2465,25 +2470,33 @@ class RegionSelector(QWidget):
             return
         self.current = event.position().toPoint()
         r = QRect(self.origin, self.current).normalized().intersected(self.rect())
-        self.hide()
         if r.width() < 12 or r.height() < 12:
-            self.image = None
+            self.dismiss()
             return
         # Qt logikai koordinátáit a rögzített kép pixeleire alakítjuk.
         sx = self.image.width / self.width()
         sy = self.image.height / self.height()
         crop = self.image.crop((round(r.left()*sx), round(r.top()*sy),
                                 round((r.left()+r.width())*sx), round((r.top()+r.height())*sy)))
-        self.image = None  # Ne tartsuk memóriában a teljes képernyőt.
+        self.dismiss()
         self.selected.emit(crop)
 
-    def cancel(self):
-        """Dismiss the selection and discard the captured frame, without translating."""
-        self.hide()
+    def dismiss(self):
+        """Leave no old rectangle in the reusable window's last painted frame."""
         self.origin = None
         self.current = None
         self.image = None
-        self.update()
+        if self.isVisible():
+            self.repaint()  # A hidden widget's update() would only be deferred.
+        self.hide()
+
+    def cancel(self):
+        """Dismiss the selection and discard the captured frame, without translating."""
+        self.dismiss()
+
+    def closeEvent(self, event):
+        self.cancel()
+        event.accept()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
@@ -3005,6 +3018,7 @@ if __name__ == '__main__':
         except Exception:
             pass
         sys.exit(1)
+
 
 
 
